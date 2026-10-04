@@ -235,8 +235,22 @@ Here `w` is the win rate, `G` the average gain and `L` the average absolute loss
 | `entry_offset_ticks` | 1 | 0 or more | Added to the trigger |
 | `entry_validity_candles` | 1 | 1 or more | Candles the trigger stays live |
 | `inside_bar` | off | on or off | Optional filter |
+| `day_trade` | off | on or off | When on, nothing is held overnight (see below) |
+| `min_entry_time` | `00:00` (start of day) | `HH:MM` | Day-trade only: earliest candle open for a fill |
+| `max_entry_time` | none, meaning `exit_time` | `HH:MM`, at most `exit_time` | Day-trade only: a fill candle must open before it |
+| `exit_time` | `16:30` | `HH:MM` | Day-trade only: forced exit time (the owner's end-of-day call; B3 hours are still an open question) |
+| `day_exit_policy` | `auto` | `auto`, `last_candle_open` | Day-trade only: how the forced exit is priced |
 
 The moving-average filter of the reference (8 and 80 periods) comes after the MVP and needs its own written definition first.
+
+**Day-trade mode (the owner's rules, Oct 4, 2026).** When `day_trade` is on, no position is held overnight. Times are São Paulo wall-clock times and the engine needs the candle length (`timeframe`), so it refuses the daily timeframe.
+
+- **Pattern and order:** c1 and c2 may belong to the previous day. The entry order can fill only on the same day as c3 and expires at the end of that day.
+- **Entry window:** a fill is allowed only on a candle that opens at or after `min_entry_time` and before `max_entry_time`, and that ends no later than `exit_time`. So the candle that contains the exit time is never an entry candle. The signals themselves can form at any time.
+- **Forced exit:** a position still open when a candle that ends after `exit_time` begins (the candle containing the exit time, or a later one) is closed on that candle, after the gap rules of section 6 and before its stop and target are looked at. The exit reason is `time`. The price depends on `day_exit_policy`:
+  - `auto`: if finer-timeframe candles (`intraday`) are supplied, they pinpoint the exit. The stop and target are checked on the finer candles from the exit candle's open up to, but not including, the last finer candle that starts at or before `exit_time`, and the open of that candle is the exit price. It is exact when a finer candle starts at `exit_time`, for example 16:30 on M30 data. Without finer candles for that day, it behaves like `last_candle_open`.
+  - `last_candle_open`: exit at the open of the exit candle (with H2 candles, the 16:00 candle's open, slightly before 16:30). It never uses prices after `exit_time`. This is a stopgap and the only policy that exists today; new policies are added by name.
+- **Stop and target** keep working during the day.
 
 **Engine assumptions, all pending sign-off:**
 
@@ -247,6 +261,8 @@ The moving-average filter of the reference (8 and 80 periods) comes after the MV
 5. **One working order or position (assumption).** A new signal is considered only if its c3 is at or after the candle where the previous order expired or the previous trade exited.
 6. **Open position at the end of the data (assumption).** It is not a closed trade and is left out of the results.
 7. **Wins and losses (assumption).** A win has PnL above zero and a loss below zero. A zero-PnL trade is neither and breaks a streak.
+8. **Day-trade exit candle (assumption).** The forced exit happens on the first candle that ends after `exit_time`, so the candle that contains the exit time is neither an entry candle nor evaluated for stop and target, unless `auto` has finer candles for it.
+9. **Short days (assumption).** If a day ends before any candle ends after `exit_time` and a day-trade position is open, it is closed at the close of that day's last candle.
 
 **Worked example for the first golden test** (tick R$ 0.01, lot 100, capital R$ 100,000, max risk R$ 200, `risk_factor` 2, `c2_low` stop, offset 1, validity 1, no filter):
 
@@ -260,9 +276,9 @@ The moving-average filter of the reference (8 and 80 periods) comes after the MV
 
 Expected result: risk per share 0.36, quantity `floor(200 / 0.36) = 555`, rounded down to the lot, 500 shares. PnL is 500 times 0.72, which is **+R$ 360.00**, exactly 2.0 R of the risk actually taken (500 times 0.36 = R$ 180). With `inside_bar` on, the same series gives no trade, because c3's low (10.35) is above c2's low (10.20).
 
-**Golden cases to write, one test each:** the worked example above; the same setup where c4 also reaches the stop (stop wins); a gap-up open above the trigger; stop and target both inside one candle; gap through the stop and through the target; trigger never reached within the validity window, and reached on the second candle with validity 2; `c3_low` stop; `amplitude` target; inside bar on and off; a signal discarded because the stop is above the trigger; quantity rounding to zero.
+**Golden cases to write, one test each:** the worked example above; the same setup where c4 also reaches the stop (stop wins); a gap-up open above the trigger; stop and target both inside one candle; gap through the stop and through the target; trigger never reached within the validity window, and reached on the second candle with validity 2; `c3_low` stop; `amplitude` target; inside bar on and off; a signal discarded because the stop is above the trigger; quantity rounding to zero; the day-trade cases (forced exit ignoring the exit candle's range, no overnight order, entry window edges, the exit candle never an entry, stop still working, short day, finer-candle pinpoint with stop, target and plain exit, policy `last_candle_open`).
 
-**Not specified yet, blocked by open questions:** the day-trade mode (entry window, forced exit time and the price it fills at on H2 and H4 candles, which depend on the B3 session hours), and the mirror 123 de venda. Neither is implemented until the owner answers.
+**Not specified yet, blocked by an open question:** the mirror 123 de venda. It is not implemented until the owner answers.
 
 ## 8. Testing strategy
 
@@ -365,10 +381,12 @@ Nothing merges to `main` unless the quality gates pass, and each phase has an ex
 
 - [x] 123 de compra definition: the owner chose the QuantBrasil-style rules (Oct 4, 2026), written in section 7.
 - [ ] Sign off the section 7 assumptions: strict highs comparison, stop check on the entry candle, gap fills on exit, discarded signals with stop above trigger, no trade below one lot, one working order or position, open position at end of data, zero-PnL trades.
-- [ ] Define the day-trade mode (entry window, forced exit time and fill price on H2 and H4 candles) and 123 de venda.
+- [x] Day-trade mode: the owner gave the rules and the 16:30 exit time (Oct 4, 2026), written in section 7.
+- [ ] Sign off the day-trade assumptions in section 7 (items 8 and 9) and the `last_candle_open` stopgap, and export a finer timeframe (M30 or M15) from MT5 to pinpoint 16:30.
+- [ ] Define 123 de venda.
 - [ ] Choose the MVP instrument universe, for example a few liquid stocks, one ETF and one index.
 - [ ] Find out whether the broker's MT5 history is adjusted and how deep H1 and H2 go.
-- [ ] Confirm B3 session hours and the day-trade exit time per asset class.
+- [ ] Confirm B3 session hours per asset class. The day-trade exit time is a parameter, set to 16:30 for the owner's case; the official value is not recorded.
 - [ ] Confirm the timezone of MT5 exported bar times. Working assumption: `America/Sao_Paulo` wall-clock time (the owner says broker and B3 share a timezone, but cannot say which one the export uses). Verify against the B3 calendar and record in `docs/data-notes.md`.
 - [ ] Approve the `score_v1` formula in `docs/score.md`.
 - [ ] Pick the repo license and the hosting target for the demo.
