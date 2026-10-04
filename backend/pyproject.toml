@@ -11,6 +11,7 @@ dev = [
     "jupyterlab",
     "mypy",
     "nbstripout",
+    "pandas-stubs>=3.0.5.260914",
     "pytest",
     "ruff",
 ]
@@ -34,3 +35,6 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 
 [tool.mypy]
 python_version = "3.12"
+
+[tool.ruff.lint.isort]
+known-first-party = ["b3core", "b3report"]
