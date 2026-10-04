@@ -26,3 +26,20 @@ C2: Row = (10.30, 10.60, 10.20, 10.50)
 C3: Row = (10.50, 10.55, 10.35, 10.40)
 C4_ENTRY: Row = (10.40, 10.58, 10.38, 10.55)  # high reaches 10.56: fills at 10.56
 C5_TARGET: Row = (10.55, 11.30, 10.50, 11.25)  # high reaches 11.28
+
+
+def random_walk_candles(n: int, seed: int) -> pd.DataFrame:
+    """Seeded synthetic series on a 0.01 tick grid, for optimizer tests."""
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    price = 2000  # in ticks
+    rows: list[Row] = []
+    for _ in range(n):
+        open_ = max(price + int(rng.integers(-30, 31)), 200)
+        close = max(open_ + int(rng.integers(-60, 61)), 200)
+        high = max(open_, close) + int(rng.integers(0, 40))
+        low = max(min(open_, close) - int(rng.integers(0, 40)), 1)
+        rows.append((open_ / 100, high / 100, low / 100, close / 100))
+        price = close
+    return make_candles(rows)
