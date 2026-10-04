@@ -54,7 +54,8 @@ def compute_metrics(pnls: Sequence[float], capital: float) -> Metrics:
     avg_loss = float(losses.mean()) if len(losses) else 0.0
 
     if losses.sum() > 0:
-        profit_factor = float(gains.sum() / losses.sum())
+        with np.errstate(over="ignore"):  # a tiny loss total overflows to inf, the true limit
+            profit_factor = float(gains.sum() / losses.sum())
     else:
         profit_factor = math.inf if gains.sum() > 0 else 0.0
 

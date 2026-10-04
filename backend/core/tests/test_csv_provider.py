@@ -142,3 +142,24 @@ def test_validate_candles_flags_unsorted_timestamps() -> None:
 def test_validate_candles_flags_low_above_close() -> None:
     df = _candles([("2016-10-03 13:00", 10.0, 10.5, 10.25, 10.2, 100)])
     assert any("low" in i for i in validate_candles(df))
+
+
+def test_m30_file_is_read_with_its_mt5_token(tmp_path: Path) -> None:
+    write_csv(
+        tmp_path,
+        "TEST3_M30_202401031630_202401031700.csv",
+        H2_HEADER,
+        [
+            "2024.01.03\t16:30:00\t10.72\t11.30\t10.70\t11.25\t10\t500\t1",
+            "2024.01.03\t17:00:00\t11.25\t11.30\t11.20\t11.28\t10\t700\t1",
+        ],
+    )
+
+    df = CsvProvider(tmp_path).get_candles("TEST3", Timeframe.M30, START, END)
+
+    # Hand computed: January 2024 is UTC-3, so 16:30 local is 19:30Z.
+    assert df["ts"].tolist() == [
+        pd.Timestamp("2024-01-03 19:30", tz="UTC"),
+        pd.Timestamp("2024-01-03 20:00", tz="UTC"),
+    ]
+    assert df["volume"].tolist() == [500.0, 700.0]

@@ -1,8 +1,21 @@
 import math
 
 import pytest
-from helpers import C1, C2, C3, C4_ENTRY, C5_TARGET, make_candles, random_walk_candles
+from helpers import (
+    C1,
+    C2,
+    C3,
+    C4_ENTRY,
+    C5_TARGET,
+    make_candles,
+    make_candles_at,
+    random_m30_candles,
+    random_multi_day_candles,
+    random_walk_candles,
+)
+from test_day_trade import M30_TIMES, ROWS_A, TIMES_A
 
+from b3core.data import Timeframe
 from b3core.engine import BacktestConfig, run_backtest
 from b3core.metrics import compute_metrics
 from b3core.optimizer import (
@@ -315,3 +328,119 @@ def test_profit_factor_objective_can_be_infinite_and_still_ranks() -> None:
     result = optimize(WORKED, BASE, RF_SPACE, objective="profit_factor", oos_fraction=0.0)
 
     assert math.isinf(result.best.objective)  # one winning trade and no losses
+
+
+# --- day trade ---------------------------------------------------------------------------------
+
+
+DAY_BASE = BacktestConfig(max_risk_brl=200, day_trade=True)
+
+
+def test_run_hash_depends_on_the_timeframe_and_the_finer_candles() -> None:
+    intraday = make_candles_at([(10.64, 10.70, 10.60, 10.66)], ["2024-01-03 16:00"])
+
+    plain = data_fingerprint(WORKED)
+    assert data_fingerprint(WORKED, timeframe=Timeframe.H2) != plain
+    assert data_fingerprint(WORKED, timeframe=Timeframe.H4) != data_fingerprint(
+        WORKED, timeframe=Timeframe.H2
+    )
+    assert data_fingerprint(WORKED, intraday=intraday) != plain
+
+
+def test_invalid_entry_windows_are_dropped_before_evaluating() -> None:
+    space = ParamSpace(
+        {
+            "min_entry_time": ["00:00", "15:00", "16:00"],
+            "max_entry_time": ["12:00", "15:30"],
+        }
+    )
+
+    restricted = space.restricted(DAY_BASE)
+
+    # kept: (00:00, 12:00), (00:00, 15:30), (15:00, 15:30); the other three have min >= max
+    assert restricted.size == 3
+    assert [tuple(restricted.decode(i).values()) for i in range(3)] == [
+        ("00:00", "12:00"),
+        ("00:00", "15:30"),
+        ("15:00", "15:30"),
+    ]
+    assert describe_space(space, base=DAY_BASE).size == 3
+    result = optimize(
+        random_multi_day_candles(6, seed=1),
+        DAY_BASE,
+        space,
+        timeframe=Timeframe.H2,
+        oos_fraction=0,
+    )
+    assert result.n_trials == 3
+
+
+def test_a_space_with_no_valid_window_is_an_error() -> None:
+    space = ParamSpace({"min_entry_time": ["16:00"], "max_entry_time": ["12:00"]})
+
+    with pytest.raises(ValueError, match="entry window"):
+        space.restricted(DAY_BASE)
+
+
+def test_day_trade_without_a_timeframe_fails_with_a_clear_message() -> None:
+    with pytest.raises(ValueError, match="timeframe"):
+        optimize(
+            random_multi_day_candles(4, seed=1),
+            DAY_BASE,
+            ParamSpace({"risk_factor": ParamRange(1, 2, 1)}),
+            oos_fraction=0,
+        )
+
+
+def test_the_exit_policy_can_be_optimized_with_finer_candles() -> None:
+    candles = make_candles_at(ROWS_A, TIMES_A)
+    intraday = make_candles_at(
+        [(10.64, 10.70, 10.60, 10.66), (10.72, 11.30, 10.70, 11.25), (10.70, 10.72, 10.60, 10.65)],
+        M30_TIMES,
+    )
+    space = ParamSpace({"day_exit_policy": ["auto", "last_candle_open"]})
+
+    result = optimize(
+        candles, DAY_BASE, space, timeframe=Timeframe.H2, intraday=intraday, oos_fraction=0
+    )
+
+    pnl = {t.params["day_exit_policy"]: t.metrics.net_pnl for t in result.trials}
+    assert pnl["auto"] == pytest.approx(80.0)  # pinpointed 16:30 open, 10.72
+    assert pnl["last_candle_open"] == pytest.approx(45.0)  # the 16:00 candle's open, 10.65
+
+
+def test_finer_candles_are_split_with_the_out_of_sample_cut() -> None:
+    candles = random_multi_day_candles(20, seed=4)
+    intraday = random_m30_candles(20, seed=4)
+    space = ParamSpace({"risk_factor": ParamRange(1, 3, 1), "min_entry_time": ["00:00", "11:00"]})
+
+    result = optimize(
+        candles,
+        DAY_BASE,
+        space,
+        timeframe=Timeframe.H2,
+        intraday=intraday,
+        oos_fraction=0.3,
+        top_n=2,
+    )
+
+    in_sample, out_of_sample = split_candles(candles, 0.3)
+    cut = out_of_sample["ts"].iloc[0]
+    expected_in = optimize(
+        in_sample,
+        DAY_BASE,
+        space,
+        timeframe=Timeframe.H2,
+        intraday=intraday[intraday["ts"] < cut].reset_index(drop=True),
+        oos_fraction=0,
+    )
+    assert result.trials == expected_in.trials
+    for row in result.validation:
+        config = space.build_config(DAY_BASE, row.params)
+        direct = run_backtest(
+            out_of_sample,
+            config,
+            timeframe=Timeframe.H2,
+            intraday=intraday[intraday["ts"] >= cut].reset_index(drop=True),
+        )
+        assert row.out_of_sample.metrics == direct.metrics

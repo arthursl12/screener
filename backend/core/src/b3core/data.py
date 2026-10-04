@@ -16,10 +16,28 @@ EXPORT_TIMEZONE = "America/Sao_Paulo"
 class Timeframe(Enum):
     """Supported timeframes. The value is the token MT5 puts in exported file names."""
 
+    M1 = "M1"
+    M5 = "M5"
+    M15 = "M15"
+    M30 = "M30"
     D1 = "Daily"
     H1 = "H1"
     H2 = "H2"
     H4 = "H4"
+
+    @property
+    def minutes(self) -> int:
+        """Length of one candle, from the schedule and never from the data."""
+        return {
+            "M1": 1,
+            "M5": 5,
+            "M15": 15,
+            "M30": 30,
+            "H1": 60,
+            "H2": 120,
+            "H4": 240,
+            "Daily": 1440,
+        }[self.value]
 
 
 class DataProvider(Protocol):

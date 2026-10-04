@@ -18,7 +18,8 @@ from typing import Any, Protocol
 import numpy as np
 import pandas as pd
 
-from b3core.engine import BacktestConfig, run_backtest
+from b3core.data import Timeframe
+from b3core.engine import BacktestConfig, run_backtest, window_is_valid
 from b3core.metrics import Metrics, compute_metrics
 
 ENGINE_VERSION = "0.1.0"
@@ -61,7 +62,11 @@ class ParamRange:
         return [round(self.start + i * self.step, 10) for i in range(self.size)]
 
 
-ParamSpec = ParamRange | Sequence[Any] | int | float | str | bool
+ParamSpec = ParamRange | Sequence[Any] | int | float | str | bool | None
+
+# The entry window is a relation between three parameters, so invalid combinations are dropped
+# before evaluation (brief section 12, rule 1) and not rejected one value at a time.
+_WINDOW_PARAMS = ("min_entry_time", "max_entry_time", "exit_time")
 
 _CONFIG_FIELDS = {f.name: f for f in fields(BacktestConfig)}
 
@@ -71,6 +76,7 @@ class ParamSpace:
 
     def __init__(self, params: Mapping[str, ParamSpec]) -> None:
         self._axes: dict[str, list[Any]] = {}
+        self._valid: list[int] | None = None  # raw indices that survive `restricted`
         for name, spec in params.items():
             if name not in _CONFIG_FIELDS:
                 raise ValueError(f"unknown parameter {name!r}")
@@ -89,13 +95,20 @@ class ParamSpace:
         return list(self._axes)
 
     @property
-    def size(self) -> int:
+    def _raw_size(self) -> int:
         return math.prod(len(axis) for axis in self._axes.values())
+
+    @property
+    def size(self) -> int:
+        return self._raw_size if self._valid is None else len(self._valid)
 
     def decode(self, index: int) -> dict[str, Any]:
         """The index-th combination, last parameter varying fastest."""
         if not 0 <= index < self.size:
             raise IndexError(f"index {index} outside a space of {self.size} combinations")
+        return self._decode_raw(index if self._valid is None else self._valid[index])
+
+    def _decode_raw(self, index: int) -> dict[str, Any]:
         params: dict[str, Any] = {}
         for name in reversed(self.names):
             axis = self._axes[name]
@@ -109,9 +122,35 @@ class ParamSpace:
             merged[name] = _cast(name, value)
         return BacktestConfig(**merged)
 
+    def restricted(self, base: BacktestConfig) -> "ParamSpace":
+        """A copy without the combinations whose entry window is invalid (min < max <= exit)."""
+        if not any(name in self._axes for name in _WINDOW_PARAMS):
+            return self
+        defaults = {name: getattr(base, name) for name in _WINDOW_PARAMS}
+        valid = []
+        for raw in range(self._raw_size):
+            params = {
+                **defaults,
+                **{k: v for k, v in self._decode_raw(raw).items() if k in defaults},
+            }
+            if window_is_valid(
+                params["min_entry_time"], params["max_entry_time"], params["exit_time"]
+            ):
+                valid.append(raw)
+        if not valid:
+            raise ValueError("no combination has a valid entry window")
+        copy = ParamSpace({name: list(axis) for name, axis in self._axes.items()})
+        copy._valid = valid
+        return copy
+
     def validate(self, base: BacktestConfig) -> None:
-        """Build a config for every axis value, so bad ranges fail before any backtest runs."""
+        """Build a config for every axis value, so bad ranges fail before any backtest runs.
+
+        The window parameters are checked together by `restricted`, not one value at a time.
+        """
         for name, axis in self._axes.items():
+            if name in _WINDOW_PARAMS:
+                continue
             for value in axis:
                 self.build_config(base, {name: value})
 
@@ -133,8 +172,13 @@ class SpaceInfo:
     recommendation: str  # "grid" or "genetic"
 
 
-def describe_space(space: ParamSpace) -> SpaceInfo:
-    """Report the search-space size before running, and which algorithm suits it."""
+def describe_space(space: ParamSpace, base: BacktestConfig | None = None) -> SpaceInfo:
+    """Report the search-space size before running, and which algorithm suits it.
+
+    Pass `base` to count only the combinations with a valid entry window.
+    """
+    if base is not None:
+        space = space.restricted(base)
     return SpaceInfo(
         size=space.size,
         recommendation="grid" if space.size <= GRID_RECOMMENDED_LIMIT else "genetic",
@@ -168,13 +212,25 @@ class Constraints:
         return self.max_drawdown is None or metrics.max_drawdown <= self.max_drawdown
 
 
-def data_fingerprint(candles: pd.DataFrame) -> str:
-    """SHA-256 over the candle values only, so the same candles always hash the same."""
-    digest = hashlib.sha256()
+def _hash_candles(digest: "hashlib._Hash", candles: pd.DataFrame) -> None:
     utc_ns = candles["ts"].dt.tz_convert("UTC").dt.tz_localize(None).astype("datetime64[ns]")
     digest.update(utc_ns.to_numpy().astype(np.int64).tobytes())
     for column in ("open", "high", "low", "close", "volume"):
         digest.update(candles[column].to_numpy(dtype=np.float64).tobytes())
+
+
+def data_fingerprint(
+    candles: pd.DataFrame,
+    intraday: pd.DataFrame | None = None,
+    timeframe: Timeframe | None = None,
+) -> str:
+    """SHA-256 over the candle values, the timeframe and the finer candles, never over indexes."""
+    digest = hashlib.sha256()
+    _hash_candles(digest, candles)
+    digest.update(b"|timeframe:" + (timeframe.value.encode() if timeframe else b"none"))
+    digest.update(b"|intraday:")
+    if intraday is not None:
+        _hash_candles(digest, intraday)
     return digest.hexdigest()
 
 
@@ -229,17 +285,20 @@ class TrialCache:
 
 Evaluate = Callable[[Sequence[int]], list[Trial]]
 
-_pool_candles: pd.DataFrame | None = None
+_pool_data: tuple[pd.DataFrame, Timeframe | None, pd.DataFrame | None] | None = None
 
 
-def _init_pool(candles: pd.DataFrame) -> None:
-    global _pool_candles
-    _pool_candles = candles
+def _init_pool(
+    candles: pd.DataFrame, timeframe: Timeframe | None, intraday: pd.DataFrame | None
+) -> None:
+    global _pool_data
+    _pool_data = (candles, timeframe, intraday)
 
 
 def _pool_task(config: BacktestConfig) -> Metrics:
-    assert _pool_candles is not None
-    return run_backtest(_pool_candles, config).metrics
+    assert _pool_data is not None
+    candles, timeframe, intraday = _pool_data
+    return run_backtest(candles, config, timeframe=timeframe, intraday=intraday).metrics
 
 
 class _Evaluator:
@@ -253,8 +312,12 @@ class _Evaluator:
         workers: int,
         cache: TrialCache,
         max_evaluations: int | None,
+        timeframe: Timeframe | None = None,
+        intraday: pd.DataFrame | None = None,
     ) -> None:
         self._candles = candles
+        self._timeframe = timeframe
+        self._intraday = intraday
         self._base = base
         self._space = space
         self._objective = objective
@@ -263,7 +326,7 @@ class _Evaluator:
         self._cache = cache
         self._budget = max_evaluations
         self._used = 0
-        self._fingerprint = data_fingerprint(candles)
+        self._fingerprint = data_fingerprint(candles, intraday, timeframe)
 
     def __call__(self, indices: Sequence[int]) -> list[Trial]:
         params = [self._space.decode(i) for i in indices]
@@ -305,12 +368,17 @@ class _Evaluator:
 
     def _run(self, configs: list[BacktestConfig]) -> list[Metrics]:
         if self._workers <= 1 or len(configs) < 2:
-            return [run_backtest(self._candles, c).metrics for c in configs]
+            return [
+                run_backtest(
+                    self._candles, c, timeframe=self._timeframe, intraday=self._intraday
+                ).metrics
+                for c in configs
+            ]
         with ProcessPoolExecutor(
             max_workers=self._workers,
             mp_context=multiprocessing.get_context("spawn"),
             initializer=_init_pool,
-            initargs=(self._candles,),
+            initargs=(self._candles, self._timeframe, self._intraday),
         ) as pool:
             return list(pool.map(_pool_task, configs))
 
@@ -446,21 +514,39 @@ def optimize(
     workers: int = 1,
     max_evaluations: int | None = None,
     cache: TrialCache | None = None,
+    timeframe: Timeframe | None = None,
+    intraday: pd.DataFrame | None = None,
 ) -> OptimizationResult:
     """Search in-sample, then re-run the best `top_n` feasible results out-of-sample.
 
-    With `oos_fraction=0` the search uses all candles and nothing is validated.
+    With `oos_fraction=0` the search uses all candles and nothing is validated. Day-trade runs
+    need the candles' `timeframe`; `intraday` (finer candles) is split at the same cut in time.
     """
     objective_value(compute_metrics([], 1.0), objective)  # fail fast on an unknown objective
+    space = space.restricted(base_config)
     space.validate(base_config)
 
     constraints = constraints or Constraints()
     algorithm = algorithm or GridSearch()
     cache = cache if cache is not None else TrialCache()
     in_sample, out_of_sample = split_candles(candles, oos_fraction)
+    in_intraday, out_intraday = intraday, intraday
+    if intraday is not None and len(out_of_sample):
+        cut = out_of_sample["ts"].iloc[0]
+        in_intraday = intraday[intraday["ts"] < cut].reset_index(drop=True)
+        out_intraday = intraday[intraday["ts"] >= cut].reset_index(drop=True)
 
     search = _Evaluator(
-        in_sample, base_config, space, objective, constraints, workers, cache, max_evaluations
+        in_sample,
+        base_config,
+        space,
+        objective,
+        constraints,
+        workers,
+        cache,
+        max_evaluations,
+        timeframe,
+        in_intraday,
     )
     trials = algorithm.search(space, search)
     result = OptimizationResult(objective=objective, names=space.names, trials=trials)
@@ -468,7 +554,16 @@ def optimize(
         return result
 
     validate = _Evaluator(
-        out_of_sample, base_config, space, objective, constraints, workers, cache, None
+        out_of_sample,
+        base_config,
+        space,
+        objective,
+        constraints,
+        workers,
+        cache,
+        None,
+        timeframe,
+        out_intraday,
     )
     top = [t for t in result.ranked_trials() if t.feasible][:top_n]
     out_trials = validate([t.index for t in top])
