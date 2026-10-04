@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
+from b3core.metrics import Metrics, compute_metrics
+
 STOP_MODES = ("c2_low", "c3_low")
 TARGET_MODES = ("risk_fixed", "amplitude")
 
@@ -81,6 +83,23 @@ class Trade:
 class BacktestResult:
     config: BacktestConfig
     trades: list[Trade]
+
+    @property
+    def metrics(self) -> Metrics:
+        return compute_metrics([t.pnl for t in self.trades], self.config.capital_brl)
+
+    def equity_curve(self) -> pd.DataFrame:
+        """Initial capital plus cumulative PnL, one row per closed trade after a start row."""
+        equity = self.config.capital_brl + np.cumsum([t.pnl for t in self.trades])
+        start_ts = [self.trades[0].entry_ts] if self.trades else []
+        return pd.DataFrame(
+            {
+                "ts": start_ts + [t.exit_ts for t in self.trades],
+                "equity": np.concatenate(([self.config.capital_brl], equity))
+                if self.trades
+                else [],
+            }
+        )
 
 
 def round_to_tick(price: float, tick: float) -> float:

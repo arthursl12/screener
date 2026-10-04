@@ -108,3 +108,16 @@ def test_exit_price_is_a_stop_or_target_fill(candles: pd.DataFrame, config: Back
 @given(candles=candle_series(), config=configs())
 def test_same_inputs_give_identical_results(candles: pd.DataFrame, config: BacktestConfig) -> None:
     assert run_backtest(candles, config) == run_backtest(candles.copy(), config)
+
+
+@PROPERTY
+@given(candles=candle_series(), config=configs())
+def test_sum_of_pnl_equals_final_equity_minus_capital(
+    candles: pd.DataFrame, config: BacktestConfig
+) -> None:
+    result = run_backtest(candles, config)
+    curve = result.equity_curve()
+
+    total = sum(t.pnl for t in result.trades)
+    final = curve["equity"].iloc[-1] if len(curve) else config.capital_brl
+    assert abs(final - config.capital_brl - total) < 1e-6
