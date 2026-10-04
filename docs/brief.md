@@ -210,17 +210,16 @@ Here `w` is the win rate, `G` the average gain and `L` the average absolute loss
 
 **The notebook is the MVP's front end.** Start with one ticker and 123 de compra in a Jupyter notebook in `notebooks/`. Check the worked example from section 7 by hand, then plot the candles with entries and exits, the equity curve and the monthly returns with `report`. There is no UI: parameters are plain variables or typed config objects (`BacktestConfig`, and a `ParamRange` with start, stop and step for the optimizer) set in code. Configs serialize to JSON, so the same objects feed `run_hash` and the API later. The notebook imports the workspace packages and holds no trading logic. Strip outputs before committing (for example with nbstripout), so diffs stay readable and no vendor data lands in git.
 
-## 7. Strategy spec: 123 de compra and 123 de venda
+## 7. Strategy spec: 123 de compra (123 de venda follows)
 
-The definition below is **proposed and needs the owner's sign-off** before it is implemented. If the owner's rules differ, change this section first, then the tests, then the code.
+**Status.** On Oct 4, 2026 the owner chose the QuantBrasil-style definition of 123 de compra over the earlier proposal (lows-based pattern). The rules below restate it in our own words. Anything marked **(assumption)** is a detail the reference does not state; it is pinned by a test, listed in the open questions in section 10, and needs the owner's sign-off. 123 de venda (the mirror) and the day-trade mode are not specified yet, see the end of this section.
 
-**123 de compra (buy).** Take three consecutive closed candles c1, c2, c3. The pattern is valid when c2 makes a lower low than c1 and c3 makes a higher low than c2. The signal is evaluated on the close of c3.
+**123 de compra (buy).** Take three consecutive closed candles c1, c2, c3. The pattern is valid when c2 has the highest high of the three: `c2.high > c1.high` and `c2.high > c3.high` (strict comparison, **assumption**). There is no condition on lows or closes. The signal is evaluated on the close of c3.
 
-- **Entry:** a stop-buy at `c3.high + entry_offset_ticks`, live for `entry_validity_candles` candles after c3.
-- **Stop:** `c3.low - 1 tick`.
-- **Target:** entry plus `risk_factor` times (entry minus stop).
-
-**123 de venda (sell)** is the exact mirror: c2 makes a higher high than c1, c3 makes a lower high than c2, entry is a stop-sell at `c3.low - offset`, stop is `c3.high + 1 tick`, target is below entry.
+- **Entry:** a stop-buy at `c3.high + entry_offset_ticks * tick`, live for `entry_validity_candles` candles after c3. Fill at the trigger, or at the open if the candle gaps above it (section 6, rule 2).
+- **Stop:** `stop_mode` picks the low of c2 (`c2_low`, default) or of c3 (`c3_low`). The stop sits exactly at that low, with no tick offset.
+- **Target:** `target_mode` picks `risk_fixed` (entry plus `risk_factor` times entry minus stop) or `amplitude` (entry plus the highest high minus the lowest low of c1, c2 and c3). Both are measured from the actual fill price and rounded to the nearest tick.
+- **Optional filter, `inside_bar`:** when on, c3 must have a lower high and a lower low than c2.
 
 **Parameters:**
 
@@ -228,28 +227,42 @@ The definition below is **proposed and needs the owner's sign-off** before it is
 | --- | --- | --- | --- |
 | `capital_brl` | 100000 | > 0 | Fixed per trade, no compounding |
 | `max_risk_brl` | 2000 | > 0 | Maximum loss per trade, drives quantity |
-| `risk_factor` | 2 | 1 to 5 | Target in R multiples |
+| `tick_size` | 0.01 | > 0 | Instrument tick |
+| `lot_size` | 100 | 1 or more | Instrument lot |
+| `stop_mode` | `c2_low` | `c2_low`, `c3_low` | |
+| `target_mode` | `risk_fixed` | `risk_fixed`, `amplitude` | |
+| `risk_factor` | 2 | 1 to 5 | Used only by `risk_fixed` |
 | `entry_offset_ticks` | 1 | 0 or more | Added to the trigger |
 | `entry_validity_candles` | 1 | 1 or more | Candles the trigger stays live |
-| `day_trade` | off | on or off | When on, force exit at `exit_time` |
-| `min_entry_time`, `max_entry_time` | none | session hours | Entry window, day-trade only |
-| `exit_time` | session close | session hours | Forced exit, day-trade only |
+| `inside_bar` | off | on or off | Optional filter |
 
-Filters such as inside bar come after the MVP and need their own written definition first.
+The moving-average filter of the reference (8 and 80 periods) comes after the MVP and needs its own written definition first.
 
-**Worked example for the first golden test** (tick R$ 0.01, lot 100, capital R$ 100,000, max risk R$ 200, risk factor 2, no costs, no day-trade):
+**Engine assumptions, all pending sign-off:**
+
+1. **Entry candle (assumption).** The stop check also applies on the candle that fills the entry: if that candle's low reaches the stop, the trade is stopped out (section 6, rule 3, pessimistic).
+2. **Gaps on exit (assumption).** If a candle opens beyond the stop, the stop fills at the open (a worse price). If it opens beyond the target, the target fills at the target price (no unearned gain).
+3. **Invalid risk (assumption).** A signal whose stop is at or above its trigger is discarded, because risk cannot be sized.
+4. **Quantity below one lot (assumption).** If the rounded-down quantity is zero, no trade is taken.
+5. **One working order or position (assumption).** A new signal is considered only if its c3 is at or after the candle where the previous order expired or the previous trade exited.
+6. **Open position at the end of the data (assumption).** It is not a closed trade and is left out of the results.
+7. **Wins and losses (assumption).** A win has PnL above zero and a loss below zero. A zero-PnL trade is neither and breaks a streak.
+
+**Worked example for the first golden test** (tick R$ 0.01, lot 100, capital R$ 100,000, max risk R$ 200, `risk_factor` 2, `c2_low` stop, offset 1, validity 1, no filter):
 
 | Candle | Open | High | Low | Close | What happens |
 | --- | --- | --- | --- | --- | --- |
-| c1 | 10.50 | 10.60 | 10.40 | 10.45 | Reference candle |
-| c2 | 10.45 | 10.50 | 10.20 | 10.30 | Lower low than c1 |
-| c3 | 10.30 | 10.40 | 10.25 | 10.38 | Higher low than c2: signal. Trigger 10.41, stop 10.24, target 10.75 |
-| c4 | 10.38 | 10.45 | 10.35 | 10.44 | High reaches 10.41: entry fills at 10.41 |
-| c5 | 10.44 | 10.80 | 10.40 | 10.78 | High reaches 10.75: exit at target |
+| c1 | 10.20 | 10.40 | 10.10 | 10.30 | Reference candle |
+| c2 | 10.30 | 10.60 | 10.20 | 10.50 | Highest high of the three |
+| c3 | 10.50 | 10.55 | 10.35 | 10.40 | Lower high than c2: signal. Trigger 10.56, stop 10.20, target 11.28 |
+| c4 | 10.40 | 10.58 | 10.38 | 10.55 | High reaches 10.56: entry fills at 10.56 |
+| c5 | 10.55 | 11.30 | 10.50 | 11.25 | High reaches 11.28: exit at target |
 
-Expected result: risk per share 0.17, quantity `floor(200 / 0.17) = 1176`, rounded down to the lot, 1100 shares. PnL is 1100 times 0.34, which is **+R$ 374.00**, exactly 2.0 R.
+Expected result: risk per share 0.36, quantity `floor(200 / 0.36) = 555`, rounded down to the lot, 500 shares. PnL is 500 times 0.72, which is **+R$ 360.00**, exactly 2.0 R of the risk actually taken (500 times 0.36 = R$ 180). With `inside_bar` on, the same series gives no trade, because c3's low (10.35) is above c2's low (10.20).
 
-**Golden cases to write, one test each:** the worked example above; the same setup where c4 reaches the stop first; a gap-up open above the trigger; stop and target both inside one candle; trigger never reached within the validity window; day-trade forced exit at the session time; the mirrored sell versions of each.
+**Golden cases to write, one test each:** the worked example above; the same setup where c4 also reaches the stop (stop wins); a gap-up open above the trigger; stop and target both inside one candle; gap through the stop and through the target; trigger never reached within the validity window, and reached on the second candle with validity 2; `c3_low` stop; `amplitude` target; inside bar on and off; a signal discarded because the stop is above the trigger; quantity rounding to zero.
+
+**Not specified yet, blocked by open questions:** the day-trade mode (entry window, forced exit time and the price it fills at on H2 and H4 candles, which depend on the B3 session hours), and the mirror 123 de venda. Neither is implemented until the owner answers.
 
 ## 8. Testing strategy
 
@@ -350,7 +363,9 @@ Nothing merges to `main` unless the quality gates pass, and each phase has an ex
 
 **Open questions (resolve before the phase that needs them):**
 
-- [ ] Confirm the 123 definition in section 7, or replace it with the owner's own rules.
+- [x] 123 de compra definition: the owner chose the QuantBrasil-style rules (Oct 4, 2026), written in section 7.
+- [ ] Sign off the section 7 assumptions: strict highs comparison, stop check on the entry candle, gap fills on exit, discarded signals with stop above trigger, no trade below one lot, one working order or position, open position at end of data, zero-PnL trades.
+- [ ] Define the day-trade mode (entry window, forced exit time and fill price on H2 and H4 candles) and 123 de venda.
 - [ ] Choose the MVP instrument universe, for example a few liquid stocks, one ETF and one index.
 - [ ] Find out whether the broker's MT5 history is adjusted and how deep H1 and H2 go.
 - [ ] Confirm B3 session hours and the day-trade exit time per asset class.
