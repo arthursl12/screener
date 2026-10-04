@@ -16,3 +16,7 @@ Status: **explained**, **shaky** or **to revisit**. The owner asked Claude to wr
 | 2026-10-04 | One `evaluate(indices)` seam shared by every optimizer, with cache, process pool and budget | `b3core/optimizer.py` | to revisit |
 | 2026-10-04 | `run_hash`: a SHA-256 over everything that determines a result, used as a cache key | `b3core/optimizer.py` | to revisit |
 | 2026-10-04 | In-sample search, out-of-sample validation, drop flag, neighbourhood heatmap; why the best of many trials is partly luck | `optimize`, `heatmap_figure`, the notebook | to revisit |
+| 2026-10-04 | Day trade: no position survives its day; entries only inside a window on the fill candle; the exit candle is decided from the candle schedule (open + length), never from later candles, so no look-ahead | `b3core/engine.py` `_DayContext`, `_find_exit_day` | to revisit |
+| 2026-10-04 | Forced exit priced by finer candles when supplied (pinpoint 16:30), with a named stopgap policy that can be swapped later | `b3core/engine.py` `_forced_exit`, `day_exit_policy` | to revisit |
+| 2026-10-04 | Dropping invalid parameter combinations (min entry < max entry <= exit) before evaluating, by indexing only the valid ones | `b3core/optimizer.py` `ParamSpace.restricted` | to revisit |
+| 2026-10-04 | Passing the same time cut to the finer candles when splitting in-sample and out-of-sample | `b3core/optimizer.py` `optimize` | to revisit |

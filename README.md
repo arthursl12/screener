@@ -6,7 +6,7 @@ Notebook-first backtester for B3 instruments, with a parameter optimizer.
 
 ## Status
 
-Phase 0 (barebones MVP): candles from MT5 CSV exports, the 123 de compra strategy, metrics, a grid and random-search optimizer with out-of-sample validation, and Plotly charts, all driven from a notebook. Day-trade mode, 123 de venda, `score_v1` and the genetic algorithm are not done yet. The rules and open questions are in [`docs/brief.md`](docs/brief.md).
+Phase 0 (barebones MVP): candles from MT5 CSV exports, the 123 de compra strategy, metrics, a grid and random-search optimizer with out-of-sample validation, and Plotly charts, all driven from a notebook. Day-trade mode (entry window and a forced exit at 16:30, pinpointed with M30 candles when you export them) is in. 123 de venda, `score_v1` and the genetic algorithm are not done yet. The rules and open questions are in [`docs/brief.md`](docs/brief.md).
 
 ## Quick start
 
