@@ -20,3 +20,7 @@ Status: **explained**, **shaky** or **to revisit**. The owner asked Claude to wr
 | 2026-10-04 | Forced exit priced by finer candles when supplied (pinpoint 16:30), with a named stopgap policy that can be swapped later | `b3core/engine.py` `_forced_exit`, `day_exit_policy` | to revisit |
 | 2026-10-04 | Dropping invalid parameter combinations (min entry < max entry <= exit) before evaluating, by indexing only the valid ones | `b3core/optimizer.py` `ParamSpace.restricted` | to revisit |
 | 2026-10-04 | Passing the same time cut to the finer candles when splitting in-sample and out-of-sample | `b3core/optimizer.py` `optimize` | to revisit |
+| 2026-10-04 | Spec first when the rule changes: the pattern was rebuilt from the owner's pseudocode after a wrong reading of the reference page; spec, then tests, then code | `docs/brief.md` section 7, `core/tests/test_engine_golden.py` | to revisit |
+| 2026-10-04 | EMA as a standard recursion, trend context from three comparisons, and a warm-up so unstable averages never produce signals | `b3core/indicators.py`, `find_signals` | to revisit |
+| 2026-10-04 | Levels frozen at the signal; the fill price (gap at the open) only changes the entry and the position size | `b3core/engine.py` `run_backtest` | to revisit |
+| 2026-10-04 | Validating an engine against a real reference: matching three real trades, and tracing the mismatches to vendor data (auction handling in the first and last candle) | `docs/data-notes.md`, notebook section 6 | to revisit |
