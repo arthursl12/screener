@@ -1,6 +1,10 @@
 """Test helpers: build small synthetic candle series by hand."""
 
+from typing import Any
+
 import pandas as pd
+
+from b3core.engine import BacktestConfig
 
 Row = tuple[float, float, float, float]  # open, high, low, close
 
@@ -19,13 +23,26 @@ def make_candles(rows: list[Row]) -> pd.DataFrame:
     )
 
 
-# The worked example from brief section 7. c1..c3 form the signal; trigger 10.56,
-# stop (c2 low) 10.20, target (risk factor 2) 11.28.
-C1: Row = (10.20, 10.40, 10.10, 10.30)
-C2: Row = (10.30, 10.60, 10.20, 10.50)
-C3: Row = (10.50, 10.55, 10.35, 10.40)
-C4_ENTRY: Row = (10.40, 10.58, 10.38, 10.55)  # high reaches 10.56: fills at 10.56
-C5_TARGET: Row = (10.55, 11.30, 10.50, 11.25)  # high reaches 11.28
+# The worked example from brief section 7. c1..c3 form the signal (c2 has the lowest low);
+# entry 10.41, stop (c3 low minus one tick) 10.24, target (risk times 2) 10.75.
+C1: Row = (10.50, 10.60, 10.40, 10.45)
+C2: Row = (10.45, 10.50, 10.20, 10.30)
+C3: Row = (10.30, 10.40, 10.25, 10.38)
+C4_ENTRY: Row = (10.38, 10.45, 10.35, 10.44)  # high reaches 10.41: fills at 10.41
+C5_TARGET: Row = (10.44, 10.80, 10.40, 10.78)  # high reaches 10.75
+
+
+def make_config(**overrides: Any) -> BacktestConfig:
+    """The worked-example setup: trend checks off, C3 stop, RISK target times 2, max risk 200."""
+    base: dict[str, Any] = {
+        "max_risk_brl": 200,
+        "use_ma_order": False,
+        "use_fast_slope": False,
+        "use_slow_slope": False,
+        "target_mode": "RISK",
+        "target_mult": 2.0,
+    }
+    return BacktestConfig(**{**base, **overrides})
 
 
 def random_walk_candles(n: int, seed: int) -> pd.DataFrame:

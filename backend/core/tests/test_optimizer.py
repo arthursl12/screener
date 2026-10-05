@@ -9,6 +9,7 @@ from helpers import (
     C5_TARGET,
     make_candles,
     make_candles_at,
+    make_config,
     random_m30_candles,
     random_multi_day_candles,
     random_walk_candles,
@@ -16,7 +17,7 @@ from helpers import (
 from test_day_trade import M30_TIMES, ROWS_A, TIMES_A
 
 from b3core.data import Timeframe
-from b3core.engine import BacktestConfig, run_backtest
+from b3core.engine import run_backtest
 from b3core.metrics import compute_metrics
 from b3core.optimizer import (
     BudgetExceeded,
@@ -35,7 +36,7 @@ from b3core.optimizer import (
     split_candles,
 )
 
-BASE = BacktestConfig(max_risk_brl=200)
+BASE = make_config()
 WORKED = make_candles([C1, C2, C3, C4_ENTRY, C5_TARGET])
 
 
@@ -67,9 +68,9 @@ def test_param_range_rejects_bad_arguments() -> None:
 def test_space_size_matches_the_brief_example() -> None:
     space = ParamSpace(
         {
-            "risk_factor": ParamRange(1, 5, 0.5),  # 9
+            "target_mult": ParamRange(1, 5, 0.5),  # 9
             "entry_offset_ticks": ParamRange(0, 3, 1),  # 4
-            "entry_validity_candles": ParamRange(1, 5, 1),  # 5
+            "entry_validity_bars": ParamRange(1, 5, 1),  # 5
         }
     )
 
@@ -77,16 +78,16 @@ def test_space_size_matches_the_brief_example() -> None:
 
 
 def test_fixed_values_and_option_lists_count_correctly() -> None:
-    space = ParamSpace({"lot_size": 100, "stop_mode": ["c2_low", "c3_low"]})
+    space = ParamSpace({"lot_size": 100, "stop_mode": ["C3", "C2"]})
 
     assert space.size == 2
-    assert space.decode(0) == {"lot_size": 100, "stop_mode": "c2_low"}
-    assert space.decode(1) == {"lot_size": 100, "stop_mode": "c3_low"}
+    assert space.decode(0) == {"lot_size": 100, "stop_mode": "C3"}
+    assert space.decode(1) == {"lot_size": 100, "stop_mode": "C2"}
 
 
 def test_decode_enumerates_the_whole_space_with_the_last_parameter_fastest() -> None:
     space = ParamSpace(
-        {"risk_factor": ParamRange(1, 2, 1), "entry_offset_ticks": ParamRange(0, 2, 1)}
+        {"target_mult": ParamRange(1, 2, 1), "entry_offset_ticks": ParamRange(0, 2, 1)}
     )
 
     combos = [tuple(space.decode(i).values()) for i in range(space.size)]
@@ -102,27 +103,27 @@ def test_unknown_parameter_names_are_rejected() -> None:
 
 
 def test_space_validation_catches_values_the_config_rejects() -> None:
-    space = ParamSpace({"risk_factor": ParamRange(0.5, 2, 0.5)})  # 0.5 is below the minimum of 1
+    space = ParamSpace({"target_mult": ParamRange(0, 2, 1)})  # 0 is not above zero
 
-    with pytest.raises(ValueError, match="risk_factor"):
+    with pytest.raises(ValueError, match="target_mult"):
         space.validate(BASE)
 
 
 def test_integer_fields_accept_integral_floats_and_reject_fractions() -> None:
-    space = ParamSpace({"entry_validity_candles": ParamRange(1.0, 3.0, 1.0)})
-    assert space.build_config(BASE, space.decode(2)).entry_validity_candles == 3
+    space = ParamSpace({"entry_validity_bars": ParamRange(1.0, 3.0, 1.0)})
+    assert space.build_config(BASE, space.decode(2)).entry_validity_bars == 3
 
-    bad = ParamSpace({"entry_validity_candles": ParamRange(1, 2, 0.5)})
-    with pytest.raises(ValueError, match="entry_validity_candles"):
+    bad = ParamSpace({"entry_validity_bars": ParamRange(1, 2, 0.5)})
+    with pytest.raises(ValueError, match="entry_validity_bars"):
         bad.build_config(BASE, bad.decode(1))
 
 
 def test_describe_space_reports_size_and_recommends_grid_when_small() -> None:
     small = ParamSpace(
-        {"risk_factor": ParamRange(1, 5, 0.5), "entry_offset_ticks": ParamRange(0, 3, 1)}
+        {"target_mult": ParamRange(1, 5, 0.5), "entry_offset_ticks": ParamRange(0, 3, 1)}
     )
     huge = ParamSpace(
-        {"risk_factor": ParamRange(1, 5, 0.01), "entry_offset_ticks": ParamRange(0, 30, 1)}
+        {"target_mult": ParamRange(1, 5, 0.01), "entry_offset_ticks": ParamRange(0, 30, 1)}
     )
 
     assert describe_space(small).size == 36
@@ -157,8 +158,8 @@ def test_constraints() -> None:
 def test_run_hash_depends_on_config_and_data_only() -> None:
     fp = data_fingerprint(WORKED)
 
-    assert run_hash(BASE, fp) == run_hash(BacktestConfig(max_risk_brl=200), fp)
-    assert run_hash(BASE, fp) != run_hash(BacktestConfig(max_risk_brl=201), fp)
+    assert run_hash(BASE, fp) == run_hash(make_config(), fp)
+    assert run_hash(BASE, fp) != run_hash(make_config(max_risk_brl=201), fp)
     assert len(run_hash(BASE, fp)) == 64  # SHA-256 hex digest
 
     other = make_candles([C1, C2, C3, C4_ENTRY, (10.55, 11.31, 10.50, 11.25)])
@@ -167,17 +168,17 @@ def test_run_hash_depends_on_config_and_data_only() -> None:
 
 # --- algorithms ------------------------------------------------------------------------------
 
-RF_SPACE = ParamSpace({"risk_factor": ParamRange(1, 3, 1)})
+RF_SPACE = ParamSpace({"target_mult": ParamRange(1, 3, 1)})
 
 
 def test_grid_search_finds_the_known_best_and_reports_every_trial() -> None:
-    # risk factor 1: +180, 2: +360, 3: target 11.64 is never reached so no closed trade
+    # multiple 1: target 10.58, +187; 2: target 10.75, +374; 3: target 10.92 is never reached
     result = optimize(WORKED, BASE, RF_SPACE, objective="result", oos_fraction=0.0)
 
     assert result.n_trials == 3
-    assert result.best.params["risk_factor"] == 2
-    assert result.best.metrics.net_pnl == pytest.approx(360.0)
-    ranked = [t.params["risk_factor"] for t in result.ranked_trials()]
+    assert result.best.params["target_mult"] == 2
+    assert result.best.metrics.net_pnl == pytest.approx(374.0)
+    ranked = [t.params["target_mult"] for t in result.ranked_trials()]
     assert ranked == [2, 1, 3]
 
 
@@ -192,13 +193,13 @@ def test_constraints_push_infeasible_trials_to_the_bottom() -> None:
     )
 
     infeasible = [t for t in result.trials if not t.feasible]
-    assert [t.params["risk_factor"] for t in infeasible] == [3]
-    assert result.ranked_trials()[-1].params["risk_factor"] == 3
+    assert [t.params["target_mult"] for t in infeasible] == [3]
+    assert result.ranked_trials()[-1].params["target_mult"] == 3
 
 
 def test_random_search_is_seeded_and_samples_without_repeats() -> None:
     space = ParamSpace(
-        {"risk_factor": ParamRange(1, 5, 0.5), "entry_offset_ticks": ParamRange(0, 3, 1)}
+        {"target_mult": ParamRange(1, 5, 0.5), "entry_offset_ticks": ParamRange(0, 3, 1)}
     )
     candles = random_walk_candles(200, seed=1)
 
@@ -243,7 +244,7 @@ def test_repeated_configs_hit_the_cache_instead_of_running_again() -> None:
 
 def test_process_pool_gives_the_same_trials_as_a_single_process() -> None:
     space = ParamSpace(
-        {"risk_factor": ParamRange(1, 3, 1), "entry_offset_ticks": ParamRange(0, 2, 1)}
+        {"target_mult": ParamRange(1, 3, 1), "entry_offset_ticks": ParamRange(0, 2, 1)}
     )
     candles = random_walk_candles(300, seed=3)
 
@@ -276,7 +277,7 @@ def test_flag_drop_handles_positive_and_negative_objectives() -> None:
 
 def test_optimize_searches_in_sample_only_and_validates_the_top_results_out_of_sample() -> None:
     candles = random_walk_candles(800, seed=7)
-    space = ParamSpace({"risk_factor": ParamRange(1, 3, 1), "stop_mode": ["c2_low", "c3_low"]})
+    space = ParamSpace({"target_mult": ParamRange(1, 3, 1), "stop_mode": ["C3", "C2"]})
 
     result = optimize(candles, BASE, space, objective="result", oos_fraction=0.3, top_n=3)
 
@@ -296,13 +297,13 @@ def test_optimize_searches_in_sample_only_and_validates_the_top_results_out_of_s
 
 def test_result_tables_have_one_row_per_trial_and_per_validated_result() -> None:
     candles = random_walk_candles(800, seed=7)
-    space = ParamSpace({"risk_factor": ParamRange(1, 3, 1), "stop_mode": ["c2_low", "c3_low"]})
+    space = ParamSpace({"target_mult": ParamRange(1, 3, 1), "stop_mode": ["C3", "C2"]})
 
     result = optimize(candles, BASE, space, oos_fraction=0.3, top_n=2)
 
     trials = result.trials_table()
     assert len(trials) == 6
-    assert {"risk_factor", "stop_mode", "objective", "feasible", "n_trades", "run_hash"} <= set(
+    assert {"target_mult", "stop_mode", "objective", "feasible", "n_trades", "run_hash"} <= set(
         trials.columns
     )
 
@@ -314,7 +315,7 @@ def test_result_tables_have_one_row_per_trial_and_per_validated_result() -> None
 def test_same_inputs_give_identical_optimization_results() -> None:
     candles = random_walk_candles(400, seed=5)
     space = ParamSpace(
-        {"risk_factor": ParamRange(1, 3, 1), "entry_offset_ticks": ParamRange(0, 2, 1)}
+        {"target_mult": ParamRange(1, 3, 1), "entry_offset_ticks": ParamRange(0, 2, 1)}
     )
 
     a = optimize(candles, BASE, space, oos_fraction=0.3, top_n=3)
@@ -333,7 +334,7 @@ def test_profit_factor_objective_can_be_infinite_and_still_ranks() -> None:
 # --- day trade ---------------------------------------------------------------------------------
 
 
-DAY_BASE = BacktestConfig(max_risk_brl=200, day_trade=True)
+DAY_BASE = make_config(day_trade=True)
 
 
 def test_run_hash_depends_on_the_timeframe_and_the_finer_candles() -> None:
@@ -387,7 +388,7 @@ def test_day_trade_without_a_timeframe_fails_with_a_clear_message() -> None:
         optimize(
             random_multi_day_candles(4, seed=1),
             DAY_BASE,
-            ParamSpace({"risk_factor": ParamRange(1, 2, 1)}),
+            ParamSpace({"target_mult": ParamRange(1, 2, 1)}),
             oos_fraction=0,
         )
 
@@ -398,21 +399,22 @@ def test_the_exit_policy_can_be_optimized_with_finer_candles() -> None:
         [(10.64, 10.70, 10.60, 10.66), (10.72, 11.30, 10.70, 11.25), (10.70, 10.72, 10.60, 10.65)],
         M30_TIMES,
     )
-    space = ParamSpace({"day_exit_policy": ["auto", "last_candle_open"]})
+    space = ParamSpace({"day_exit_policy": ["auto", "last_candle_open", "last_candle_close"]})
 
     result = optimize(
         candles, DAY_BASE, space, timeframe=Timeframe.H2, intraday=intraday, oos_fraction=0
     )
 
     pnl = {t.params["day_exit_policy"]: t.metrics.net_pnl for t in result.trials}
-    assert pnl["auto"] == pytest.approx(80.0)  # pinpointed 16:30 open, 10.72
-    assert pnl["last_candle_open"] == pytest.approx(45.0)  # the 16:00 candle's open, 10.65
+    assert pnl["auto"] == pytest.approx(341.0)  # pinpointed 16:30 open, 10.72
+    assert pnl["last_candle_open"] == pytest.approx(121.0)  # the 16:00 candle's open, 10.52
+    assert pnl["last_candle_close"] == pytest.approx(231.0)  # the 16:00 candle's close, 10.62
 
 
 def test_finer_candles_are_split_with_the_out_of_sample_cut() -> None:
     candles = random_multi_day_candles(20, seed=4)
     intraday = random_m30_candles(20, seed=4)
-    space = ParamSpace({"risk_factor": ParamRange(1, 3, 1), "min_entry_time": ["00:00", "11:00"]})
+    space = ParamSpace({"target_mult": ParamRange(1, 3, 1), "min_entry_time": ["00:00", "11:00"]})
 
     result = optimize(
         candles,

@@ -35,15 +35,21 @@ def day_configs(draw: st.DrawFn) -> BacktestConfig:
     return BacktestConfig(
         max_risk_brl=draw(st.sampled_from([50.0, 200.0, 2_000.0])),
         lot_size=draw(st.sampled_from([1, 100])),
-        stop_mode=draw(st.sampled_from(["c2_low", "c3_low"])),
-        target_mode=draw(st.sampled_from(["risk_fixed", "amplitude"])),
-        risk_factor=draw(st.sampled_from([1.0, 2.0, 5.0])),
+        ma_fast_period=draw(st.sampled_from([1, 2, 3])),
+        ma_slow_period=draw(st.sampled_from([2, 4, 6])),
+        use_ma_order=draw(st.booleans()),
+        use_fast_slope=draw(st.booleans()),
+        use_slow_slope=draw(st.booleans()),
         entry_offset_ticks=draw(st.integers(0, 2)),
-        entry_validity_candles=draw(st.integers(1, 3)),
+        entry_validity_bars=draw(st.integers(1, 3)),
+        stop_mode=draw(st.sampled_from(["C3", "C2"])),
+        target_mode=draw(st.sampled_from(["AMP", "RISK"])),
+        target_mult=draw(st.sampled_from([1.0, 2.0, 3.0])),
         day_trade=True,
         min_entry_time=draw(st.sampled_from(["00:00", "11:00", "13:00"])),
         max_entry_time=draw(st.sampled_from([None, "15:00"])),
         exit_time=draw(st.sampled_from(["16:30", "15:30"])),
+        day_exit_policy=draw(st.sampled_from(["last_candle_close", "last_candle_open"])),
     )
 
 
@@ -114,7 +120,7 @@ def test_trades_keep_the_basic_invariants(candles: pd.DataFrame, config: Backtes
     trades = run(candles, config)
 
     for t in trades:
-        assert t.stop < t.entry < t.target
+        assert t.stop < t.entry
         assert t.qty > 0 and t.qty % config.lot_size == 0
         assert t.qty * t.entry <= config.capital_brl + 1e-6
         assert t.exit_index >= t.entry_index

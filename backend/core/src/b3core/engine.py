@@ -10,11 +10,12 @@ import pandas as pd
 from numpy.typing import NDArray
 
 from b3core.data import Timeframe
+from b3core.indicators import trend_context
 from b3core.metrics import Metrics, compute_metrics
 
-STOP_MODES = ("c2_low", "c3_low")
-TARGET_MODES = ("risk_fixed", "amplitude")
-DAY_EXIT_POLICIES = ("auto", "last_candle_open")
+STOP_MODES = ("C3", "C2")
+TARGET_MODES = ("AMP", "RISK")
+DAY_EXIT_POLICIES = ("last_candle_close", "auto", "last_candle_open")
 
 # Trading rules are evaluated in São Paulo wall-clock time (CLAUDE.md, rule 5).
 TRADING_TIMEZONE = "America/Sao_Paulo"
@@ -48,17 +49,24 @@ class BacktestConfig:
     max_risk_brl: float = 2_000.0
     tick_size: float = 0.01
     lot_size: int = 100
-    stop_mode: str = "c2_low"
-    target_mode: str = "risk_fixed"
-    risk_factor: float = 2.0
+    ma_fast_period: int = 8
+    ma_slow_period: int = 80
+    use_ma_order: bool = True
+    use_fast_slope: bool = True
+    use_slow_slope: bool = True
+    use_price_above_fast: bool = False
+    max_c3_ticks: int = 0  # 0 means off
     entry_offset_ticks: int = 1
-    entry_validity_candles: int = 1
-    inside_bar: bool = False
+    entry_validity_bars: int = 1
+    stop_mode: str = "C3"
+    stop_offset_ticks: int = 1
+    target_mode: str = "AMP"
+    target_mult: float = 1.61
     day_trade: bool = False
     min_entry_time: str = "00:00"  # day trade only: earliest candle open for a fill
     max_entry_time: str | None = None  # day trade only: None means exit_time
     exit_time: str = "16:30"  # day trade only: forced exit time
-    day_exit_policy: str = "auto"  # day trade only: how the forced exit is priced
+    day_exit_policy: str = "last_candle_close"  # day trade only: how the forced exit is priced
 
     def __post_init__(self) -> None:
         if self.capital_brl <= 0:
@@ -69,16 +77,24 @@ class BacktestConfig:
             raise ValueError("tick_size must be positive")
         if self.lot_size < 1:
             raise ValueError("lot_size must be at least 1")
-        if self.stop_mode not in STOP_MODES:
-            raise ValueError(f"stop_mode must be one of {STOP_MODES}, got {self.stop_mode!r}")
-        if self.target_mode not in TARGET_MODES:
-            raise ValueError(f"target_mode must be one of {TARGET_MODES}, got {self.target_mode!r}")
-        if not 1 <= self.risk_factor <= 5:
-            raise ValueError("risk_factor must be between 1 and 5")
+        if self.ma_fast_period < 1:
+            raise ValueError("ma_fast_period must be at least 1")
+        if self.ma_slow_period < 1:
+            raise ValueError("ma_slow_period must be at least 1")
+        if self.max_c3_ticks < 0:
+            raise ValueError("max_c3_ticks must be 0 (off) or more")
         if self.entry_offset_ticks < 0:
             raise ValueError("entry_offset_ticks must be 0 or more")
-        if self.entry_validity_candles < 1:
-            raise ValueError("entry_validity_candles must be at least 1")
+        if self.entry_validity_bars < 1:
+            raise ValueError("entry_validity_bars must be at least 1")
+        if self.stop_mode not in STOP_MODES:
+            raise ValueError(f"stop_mode must be one of {STOP_MODES}, got {self.stop_mode!r}")
+        if self.stop_offset_ticks < 0:
+            raise ValueError("stop_offset_ticks must be 0 or more")
+        if self.target_mode not in TARGET_MODES:
+            raise ValueError(f"target_mode must be one of {TARGET_MODES}, got {self.target_mode!r}")
+        if self.target_mult <= 0:
+            raise ValueError("target_mult must be above 0")
         if self.day_exit_policy not in DAY_EXIT_POLICIES:
             raise ValueError(
                 f"day_exit_policy must be one of {DAY_EXIT_POLICIES}, got {self.day_exit_policy!r}"
@@ -149,35 +165,62 @@ def _round_to_tick_array(prices: NDArray[np.float64], tick: float) -> NDArray[np
 
 
 def find_signals(candles: pd.DataFrame, config: BacktestConfig) -> pd.DataFrame:
-    """Vectorized 123 de compra signals, evaluated on the close of c3.
+    """Vectorized 123 de compra signals, evaluated on the close of c3 (brief section 7).
 
-    Columns: c3_index (position of c3), trigger, stop, amplitude. Signals whose stop is at or
-    above the trigger are dropped because the risk cannot be sized.
+    Columns: c3_index (position of c3) and the levels frozen at the signal: trigger (entry),
+    stop and target. Signals whose entry is not above the stop (zero risk) are dropped.
     """
+    columns = ["c3_index", "trigger", "stop", "target"]
+    if len(candles) < 3:
+        return pd.DataFrame({name: [] for name in columns})
+
     high = candles["high"].to_numpy(dtype=np.float64)
     low = candles["low"].to_numpy(dtype=np.float64)
+    close = candles["close"].to_numpy(dtype=np.float64)
     tick = config.tick_size
 
+    # c1 is the oldest of the three candles, c3 the signal candle.
     h1, h2, h3 = high[:-2], high[1:-1], high[2:]
     l1, l2, l3 = low[:-2], low[1:-1], low[2:]
 
-    valid = (h2 > h1) & (h2 > h3)
-    if config.inside_bar:
-        valid &= l3 < l2
+    valid = (l3 > l2) & (l2 < l1)  # c2 has the lowest low of the three
 
-    trigger = _round_to_tick_array(h3 + config.entry_offset_ticks * tick, tick)
-    stop = _round_to_tick_array(l2 if config.stop_mode == "c2_low" else l3, tick)
-    valid &= stop < trigger
+    context = trend_context(
+        close,
+        fast_period=config.ma_fast_period,
+        slow_period=config.ma_slow_period,
+        use_ma_order=config.use_ma_order,
+        use_fast_slope=config.use_fast_slope,
+        use_slow_slope=config.use_slow_slope,
+        use_price_above_fast=config.use_price_above_fast,
+    )
+    valid &= context[2:]
+    if (
+        config.use_ma_order
+        or config.use_fast_slope
+        or config.use_slow_slope
+        or (config.use_price_above_fast)
+    ):
+        valid &= np.arange(2, len(candles)) >= config.ma_slow_period  # warm-up of the averages
 
-    # c2 has the highest high of the three, so the pattern range is c2.high - lowest low.
-    amplitude = h2 - np.minimum(np.minimum(l1, l2), l3)
+    if config.max_c3_ticks > 0:
+        valid &= np.round((h3 - l3) / tick) <= config.max_c3_ticks
+
+    entry = _round_to_tick_array(h3 + config.entry_offset_ticks * tick, tick)
+    stop_low = l3 if config.stop_mode == "C3" else l2
+    stop = _round_to_tick_array(stop_low - config.stop_offset_ticks * tick, tick)
+    valid &= entry > stop
+
+    amplitude = np.maximum(np.maximum(h1, h2), h3) - np.minimum(np.minimum(l1, l2), l3)
+    base = amplitude if config.target_mode == "AMP" else entry - stop
+    target = _round_to_tick_array(entry + config.target_mult * base, tick)
 
     return pd.DataFrame(
         {
             "c3_index": np.flatnonzero(valid) + 2,
-            "trigger": trigger[valid],
+            "trigger": entry[valid],
             "stop": stop[valid],
-            "amplitude": amplitude[valid],
+            "target": target[valid],
         }
     )
 
@@ -236,6 +279,7 @@ class _DayContext:
     exit_minute: int
     min_entry: int
     max_entry: int
+    close_exit: bool  # policy last_candle_close: evaluate the exit candle, then leave at its close
     intraday: _Intraday | None
 
     def can_fill(self, k: int) -> bool:
@@ -248,9 +292,6 @@ class _DayContext:
     def is_exit_candle(self, k: int) -> bool:
         """A candle that ends after the exit time: it contains the exit time or follows it."""
         return bool(self.minute[k] + self.period > self.exit_minute)
-
-    def last_of_day(self, k: int) -> int:
-        return int(np.searchsorted(self.day, self.day[k], side="right")) - 1
 
 
 def _local_clock(ts: pd.Series) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
@@ -296,6 +337,7 @@ def _day_context(
         exit_minute=exit_minute,
         min_entry=parse_hhmm(config.min_entry_time, "min_entry_time"),
         max_entry=max_entry,
+        close_exit=config.day_exit_policy == "last_candle_close",
         intraday=fine,
     )
 
@@ -343,6 +385,11 @@ def _find_exit_day(
             if open_[j] >= target:
                 return j, target, "target"
         if ctx.is_exit_candle(j):  # never the fill candle: fills must end by the exit time
+            if ctx.close_exit:
+                # Evaluate this candle like any other (the gaps were handled above), then leave
+                # at its close.
+                hit = _scan(open_, high, low, j, j + 1, stop, target, False)
+                return hit if hit is not None else (j, float(close[j]), "time")
             price, reason = _forced_exit(ctx, open_, j, stop, target)
             return j, price, reason
         if low[j] <= stop:
@@ -370,50 +417,47 @@ def run_backtest(
     close = candles["close"].to_numpy(dtype=np.float64)
     ts = candles["ts"]
     n_candles = len(candles)
-    tick = config.tick_size
     ctx = _day_context(candles, config, timeframe, intraday) if config.day_trade else None
 
     signals = find_signals(candles, config)
     trades: list[Trade] = []
     free_from = 0  # a signal is considered only if its c3 index is at least this
 
-    for c3, trigger, signal_stop, amplitude in zip(
+    for c3, trigger, stop, target in zip(
         signals["c3_index"].to_numpy(),
         signals["trigger"].to_numpy(),
         signals["stop"].to_numpy(),
-        signals["amplitude"].to_numpy(),
+        signals["target"].to_numpy(),
         strict=True,
     ):
         c3 = int(c3)
         if c3 < free_from:
             continue
 
-        expiry = c3 + config.entry_validity_candles
-        last_live = min(expiry, n_candles - 1)
-        fill = None
-        for k in range(c3 + 1, last_live + 1):
-            if ctx is not None and ctx.day[k] != ctx.day[c3]:
-                break  # an order never lives past the day of its signal in day-trade mode
-            if (ctx is None or ctx.can_fill(k)) and high[k] >= trigger:
-                fill = k
-                break
+        expiry = c3 + config.entry_validity_bars
+        fill = next(
+            (
+                k
+                for k in range(c3 + 1, min(expiry, n_candles - 1) + 1)
+                if (ctx is None or ctx.can_fill(k)) and high[k] >= trigger
+            ),
+            None,
+        )
         if fill is None:
-            # The order expired unfilled (in day-trade mode, at the latest at the end of the day).
-            free_from = expiry if ctx is None else min(expiry, ctx.last_of_day(c3))
+            free_from = expiry  # the order expired unfilled
             continue
 
         entry = max(float(open_[fill]), float(trigger))  # a gap above the trigger fills at the open
-        stop = float(signal_stop)
+        stop, target = float(stop), float(target)  # frozen at the signal
         qty = _quantity(entry, stop, config)
         if qty == 0:
             free_from = fill
             continue
 
         risk = entry - stop
-        distance = config.risk_factor * risk if config.target_mode == "risk_fixed" else amplitude
-        target = round_to_tick(entry + float(distance), tick)
-
-        if ctx is None:
+        if entry >= target:
+            found: tuple[int, float, str] | None = (fill, entry, "target")  # gapped past the target
+        elif ctx is None:
             found = _scan(open_, high, low, fill, n_candles, stop, target, False)
         else:
             found = _find_exit_day(open_, high, low, close, fill, stop, target, ctx)

@@ -1,11 +1,11 @@
 import math
 
 import pytest
-from helpers import C1, C2, C3, C4_ENTRY, C5_TARGET, make_candles
+from helpers import C1, C2, C3, C4_ENTRY, C5_TARGET, make_candles, make_config
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from b3core.engine import BacktestConfig, run_backtest
+from b3core.engine import run_backtest
 from b3core.metrics import compute_metrics
 
 
@@ -72,16 +72,14 @@ def test_only_winning_trades_give_infinite_profit_factor() -> None:
 
 
 def test_result_exposes_metrics_and_an_equity_curve() -> None:
-    result = run_backtest(
-        make_candles([C1, C2, C3, C4_ENTRY, C5_TARGET]), BacktestConfig(max_risk_brl=200)
-    )
+    result = run_backtest(make_candles([C1, C2, C3, C4_ENTRY, C5_TARGET]), make_config())
 
     assert result.metrics.n_trades == 1
-    assert result.metrics.result == pytest.approx(360.0 / 100_000)
+    assert result.metrics.result == pytest.approx(374.0 / 100_000)
 
     curve = result.equity_curve()
     assert list(curve.columns) == ["ts", "equity"]
-    assert curve["equity"].tolist() == pytest.approx([100_000.0, 100_360.0])
+    assert curve["equity"].tolist() == pytest.approx([100_000.0, 100_374.0])
 
 
 @settings(max_examples=200, deadline=None)

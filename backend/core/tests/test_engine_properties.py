@@ -30,12 +30,19 @@ def configs(draw: st.DrawFn) -> BacktestConfig:
         capital_brl=draw(st.sampled_from([5_000.0, 20_000.0, 100_000.0])),
         max_risk_brl=draw(st.sampled_from([50.0, 200.0, 2_000.0])),
         lot_size=draw(st.sampled_from([1, 100])),
-        stop_mode=draw(st.sampled_from(["c2_low", "c3_low"])),
-        target_mode=draw(st.sampled_from(["risk_fixed", "amplitude"])),
-        risk_factor=draw(st.sampled_from([1.0, 1.5, 2.0, 5.0])),
+        ma_fast_period=draw(st.sampled_from([1, 2, 3])),
+        ma_slow_period=draw(st.sampled_from([2, 4, 6])),
+        use_ma_order=draw(st.booleans()),
+        use_fast_slope=draw(st.booleans()),
+        use_slow_slope=draw(st.booleans()),
+        use_price_above_fast=draw(st.booleans()),
+        max_c3_ticks=draw(st.sampled_from([0, 20, 60])),
         entry_offset_ticks=draw(st.integers(0, 3)),
-        entry_validity_candles=draw(st.integers(1, 4)),
-        inside_bar=draw(st.booleans()),
+        entry_validity_bars=draw(st.integers(1, 4)),
+        stop_mode=draw(st.sampled_from(["C3", "C2"])),
+        stop_offset_ticks=draw(st.integers(0, 2)),
+        target_mode=draw(st.sampled_from(["AMP", "RISK"])),
+        target_mult=draw(st.sampled_from([0.5, 1.0, 1.61, 2.0, 3.0])),
     )
 
 
@@ -73,11 +80,10 @@ def test_trades_are_ordered_and_never_overlap(
 
 @PROPERTY
 @given(candles=candle_series(), config=configs())
-def test_stop_is_below_entry_and_target_above(
-    candles: pd.DataFrame, config: BacktestConfig
-) -> None:
+def test_stop_is_below_entry(candles: pd.DataFrame, config: BacktestConfig) -> None:
     for t in run_backtest(candles, config).trades:
-        assert t.stop < t.entry < t.target
+        assert t.stop < t.entry
+        assert t.stop < t.target  # the frozen target never falls below the frozen stop
 
 
 @PROPERTY
@@ -97,9 +103,11 @@ def test_quantity_respects_lot_capital_and_risk(
 def test_exit_price_is_a_stop_or_target_fill(candles: pd.DataFrame, config: BacktestConfig) -> None:
     for t in run_backtest(candles, config).trades:
         if t.exit_reason == "target":
-            assert t.exit == t.target
-            assert t.pnl > 0
+            # the frozen target, or the fill price itself when the fill gapped to or past it
+            assert t.exit == t.target or (t.exit == t.entry and t.entry >= t.target)
+            assert t.pnl >= 0
         else:
+            assert t.exit_reason == "stop"
             assert t.exit <= t.stop  # at the stop, or below it after a gap
             assert t.pnl < 0
 
