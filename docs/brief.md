@@ -185,7 +185,7 @@ The engine turns closed candles into signals, orders, fills and trades under the
 2. **Entry.** A stop-entry order triggers when a later candle trades through the trigger price. Fill at the trigger, or at the open if the candle gaps through it.
 3. **Stop and target in the same candle.** Assume the stop is hit first (pessimistic). Make this an `intrabar_policy` setting so a finer timeframe can replace it later.
 4. **Sizing from risk.** The user sets a maximum risk per trade in R$. Quantity is the maximum risk divided by the distance from entry to stop, rounded down to the lot size, and capped so that quantity times entry does not exceed the available capital.
-5. **Target from risk.** The target sits at entry plus or minus `risk_factor` times the entry-to-stop distance, so results can also be read in R multiples.
+5. **Target.** Either the amplitude of the three-candle pattern or a multiple of the entry-to-stop distance (section 7), so results can also be read in R multiples.
 6. **Day-trade mode.** Entries are allowed only between the configured minimum and limit hours. Any open position is closed at the configured session exit time. No overnight positions.
 7. **Fixed capital, no compounding.** Each trade is sized from the same configured capital. Equity is initial capital plus cumulative PnL.
 8. **One position per symbol at a time.** No pyramiding.
@@ -212,73 +212,83 @@ Here `w` is the win rate, `G` the average gain and `L` the average absolute loss
 
 ## 7. Strategy spec: 123 de compra (123 de venda follows)
 
-**Status.** On Oct 4, 2026 the owner chose the QuantBrasil-style definition of 123 de compra over the earlier proposal (lows-based pattern). The rules below restate it in our own words. Anything marked **(assumption)** is a detail the reference does not state; it is pinned by a test, listed in the open questions in section 10, and needs the owner's sign-off. 123 de venda (the mirror) and the day-trade mode are not specified yet, see the end of this section.
+**Status.** On Oct 4, 2026 the owner supplied pseudocode that replaces my earlier readings of the QuantBrasil page (which had the pattern on highs instead of lows). The rules below restate it in our own words and keep its parameter names. They were checked against three real QuantBrasil trades on PETR4 H2; what matched and what did not is in `docs/data-notes.md`. Anything marked **(assumption)** is a detail the pseudocode does not state; it is pinned by a test, listed in the open questions in section 10, and needs the owner's sign-off. 123 de venda (the mirror) is not specified yet.
 
-**123 de compra (buy).** Take three consecutive closed candles c1, c2, c3. The pattern is valid when c2 has the highest high of the three: `c2.high > c1.high` and `c2.high > c3.high` (strict comparison, **assumption**). There is no condition on lows or closes. The signal is evaluated on the close of c3.
+**123 de compra (buy).** Look at the last three closed candles: c3 is the signal candle, c2 the middle one and c1 the oldest (the pseudocode's `[0]`, `[1]` and `[2]`).
 
-- **Entry:** a stop-buy at `c3.high + entry_offset_ticks * tick`, live for `entry_validity_candles` candles after c3. Fill at the trigger, or at the open if the candle gaps above it (section 6, rule 2).
-- **Stop:** `stop_mode` picks the low of c2 (`c2_low`, default) or of c3 (`c3_low`). The stop sits exactly at that low, with no tick offset.
-- **Target:** `target_mode` picks `risk_fixed` (entry plus `risk_factor` times entry minus stop) or `amplitude` (entry plus the highest high minus the lowest low of c1, c2 and c3). Both are measured from the actual fill price and rounded to the nearest tick.
-- **Optional filter, `inside_bar`:** when on, c3 must have a lower high and a lower low than c2.
+- **Pattern:** c2 has the lowest low of the three: `Low[c3] > Low[c2]` and `Low[c2] < Low[c1]` (strict comparisons).
+- **Trend context:** every enabled check must pass. With `fast` and `slow` the exponential moving averages of the close: `use_ma_order` needs `fast > slow` on c3; `use_fast_slope` needs `fast` higher on c3 than on c2; `use_slow_slope` needs the same of `slow`; `use_price_above_fast` needs the close above `fast` on c1, c2 and c3.
+- **Size filter:** when `max_c3_ticks` is above zero, the range of c3 (high minus low) must be at most that many ticks.
+- **Levels, computed once at the signal and then frozen:** `entry = High[c3] + entry_offset_ticks * tick`; `amplitude` is the highest high minus the lowest low of the three candles; `stop` is `Low[c3]` (`stop_mode` C3) or `Low[c2]` (C2), minus `stop_offset_ticks * tick`; `risk = entry - stop`; `target` is `entry + target_mult * amplitude` (`target_mode` AMP) or `entry + target_mult * risk` (RISK), rounded to the nearest tick.
+- **Order:** a stop-buy at `entry`, live for `entry_validity_bars` bars after c3. It fills at `entry`, or at the open if the candle gaps above it (section 6, rule 2). The stop and the target stay at their frozen levels; they are not recomputed from the fill price.
+- **No second signal** is looked for while an order is pending or a position is open.
 
 **Parameters:**
 
-| Parameter | Default | Range | Notes |
+| Parameter | Default | Range or grid | Notes |
 | --- | --- | --- | --- |
 | `capital_brl` | 100000 | > 0 | Fixed per trade, no compounding |
 | `max_risk_brl` | 2000 | > 0 | Maximum loss per trade, drives quantity |
 | `tick_size` | 0.01 | > 0 | Instrument tick |
 | `lot_size` | 100 | 1 or more | Instrument lot |
-| `stop_mode` | `c2_low` | `c2_low`, `c3_low` | |
-| `target_mode` | `risk_fixed` | `risk_fixed`, `amplitude` | |
-| `risk_factor` | 2 | 1 to 5 | Used only by `risk_fixed` |
-| `entry_offset_ticks` | 1 | 0 or more | Added to the trigger |
-| `entry_validity_candles` | 1 | 1 or more | Candles the trigger stays live |
-| `inside_bar` | off | on or off | Optional filter |
-| `day_trade` | off | on or off | When on, nothing is held overnight (see below) |
+| `ma_fast_period` | 8 | 5 to 13 | EMA period of the close |
+| `ma_slow_period` | 80 | 50 to 200 | EMA period of the close |
+| `use_ma_order` | on | on or off | `fast > slow` |
+| `use_fast_slope` | on | on or off | `fast` rising |
+| `use_slow_slope` | on | on or off | `slow` rising |
+| `use_price_above_fast` | off | on or off | Three closes above `fast` |
+| `max_c3_ticks` | 0 | 0 (off) or more | Size cap of c3 |
+| `entry_offset_ticks` | 1 | 0 to 2 | Added to the trigger |
+| `entry_validity_bars` | 1 | 1 or more | Bars the order stays live |
+| `stop_mode` | `C3` | `C3`, `C2` | Which low is the stop |
+| `stop_offset_ticks` | 1 | 0 or more | Ticks below that low |
+| `target_mode` | `AMP` | `AMP`, `RISK` | Target from amplitude or from risk |
+| `target_mult` | 1.61 | AMP: 1, 1.272, 1.61, 2; RISK: 1, 1.5, 2, 3 | Target multiple, above 0 |
+| `day_trade` | off | on or off | When on, no position is held overnight (see below) |
 | `min_entry_time` | `00:00` (start of day) | `HH:MM` | Day-trade only: earliest candle open for a fill |
 | `max_entry_time` | none, meaning `exit_time` | `HH:MM`, at most `exit_time` | Day-trade only: a fill candle must open before it |
 | `exit_time` | `16:30` | `HH:MM` | Day-trade only: forced exit time (the owner's end-of-day call; B3 hours are still an open question) |
-| `day_exit_policy` | `auto` | `auto`, `last_candle_open` | Day-trade only: how the forced exit is priced |
-
-The moving-average filter of the reference (8 and 80 periods) comes after the MVP and needs its own written definition first.
+| `day_exit_policy` | `last_candle_close` | `last_candle_close`, `auto`, `last_candle_open` | Day-trade only: how the forced exit is priced |
 
 **Day-trade mode (the owner's rules, Oct 4, 2026).** When `day_trade` is on, no position is held overnight. Times are São Paulo wall-clock times and the engine needs the candle length (`timeframe`), so it refuses the daily timeframe.
 
-- **Pattern and order:** c1 and c2 may belong to the previous day. The entry order can fill only on the same day as c3 and expires at the end of that day.
-- **Entry window:** a fill is allowed only on a candle that opens at or after `min_entry_time` and before `max_entry_time`, and that ends no later than `exit_time`. So the candle that contains the exit time is never an entry candle. The signals themselves can form at any time.
-- **Forced exit:** a position still open when a candle that ends after `exit_time` begins (the candle containing the exit time, or a later one) is closed on that candle, after the gap rules of section 6 and before its stop and target are looked at. The exit reason is `time`. The price depends on `day_exit_policy`:
-  - `auto`: if finer-timeframe candles (`intraday`) are supplied, they pinpoint the exit. The stop and target are checked on the finer candles from the exit candle's open up to, but not including, the last finer candle that starts at or before `exit_time`, and the open of that candle is the exit price. It is exact when a finer candle starts at `exit_time`, for example 16:30 on M30 data. Without finer candles for that day, it behaves like `last_candle_open`.
-  - `last_candle_open`: exit at the open of the exit candle (with H2 candles, the 16:00 candle's open, slightly before 16:30). It never uses prices after `exit_time`. This is a stopgap and the only policy that exists today; new policies are added by name.
+- **Pattern and order:** the pattern may use candles of the previous day, and an order may fill on the first candles of the next day, as the sample QuantBrasil trades did. Only the position is forced out the day it opens.
+- **Entry window:** a fill is allowed only on a candle that opens at or after `min_entry_time` and before `max_entry_time`, and that ends no later than `exit_time`. So the candle that contains the exit time is never an entry candle. Signals can form at any time.
+- **Forced exit:** a position still open when a candle that ends after `exit_time` begins (the candle containing the exit time, or a later one) is closed on that candle. The exit reason is `time`. The price depends on `day_exit_policy`:
+  - `last_candle_close`: that candle is evaluated like any other (gap rules, then stop before target) and, if neither level is hit, the position leaves at its close. On H2 candles this is the 16:00 candle's close, a price from after 16:30. It matches the sample QuantBrasil trades.
+  - `auto`: with finer-timeframe candles (`intraday`) supplied, the exit is pinpointed. The stop and target are checked on the finer candles from the exit candle's open up to, but not including, the last finer candle that starts at or before `exit_time`, and the open of that candle is the exit price (exact when a finer candle starts at `exit_time`, for example 16:30 on M30 data). Without finer candles it behaves like `last_candle_open`.
+  - `last_candle_open`: exit at the open of the exit candle, before its range is looked at. It never uses prices after `exit_time`.
 - **Stop and target** keep working during the day.
 
 **Engine assumptions, all pending sign-off:**
 
 1. **Entry candle (assumption).** The stop check also applies on the candle that fills the entry: if that candle's low reaches the stop, the trade is stopped out (section 6, rule 3, pessimistic).
-2. **Gaps on exit (assumption).** If a candle opens beyond the stop, the stop fills at the open (a worse price). If it opens beyond the target, the target fills at the target price (no unearned gain).
-3. **Invalid risk (assumption).** A signal whose stop is at or above its trigger is discarded, because risk cannot be sized.
+2. **Gaps on exit (assumption).** If a candle opens beyond the stop, the stop fills at the open (a worse price). If it opens beyond the target, the target fills at the target price. If the fill itself gaps to or past the target, the position leaves at the fill price with zero PnL.
+3. **Sizing (from the sample trades).** Quantity is `max_risk_brl / (fill - stop)` using the actual fill price, rounded down to the lot and capped by `capital_brl / fill`.
 4. **Quantity below one lot (assumption).** If the rounded-down quantity is zero, no trade is taken.
-5. **One working order or position (assumption).** A new signal is considered only if its c3 is at or after the candle where the previous order expired or the previous trade exited.
+5. **One working order or position (assumption).** A new signal is considered only if its c3 is at or after the bar where the previous order expired or the previous trade exited.
 6. **Open position at the end of the data (assumption).** It is not a closed trade and is left out of the results.
 7. **Wins and losses (assumption).** A win has PnL above zero and a loss below zero. A zero-PnL trade is neither and breaks a streak.
-8. **Day-trade exit candle (assumption).** The forced exit happens on the first candle that ends after `exit_time`, so the candle that contains the exit time is neither an entry candle nor evaluated for stop and target, unless `auto` has finer candles for it.
-9. **Short days (assumption).** If a day ends before any candle ends after `exit_time` and a day-trade position is open, it is closed at the close of that day's last candle.
+8. **Moving averages (assumption).** `EMA` is the standard recursion with factor `2 / (period + 1)`, seeded with the first close. When any average-based check is on, signals are only considered from bar number `ma_slow_period` on (the warm-up). An out-of-sample slice restarts its averages, so it loses its first bars to the warm-up.
+9. **Day-trade exit candle (assumption).** Fills never happen on the candle that ends after `exit_time`; policies `auto` and `last_candle_open` do not evaluate that candle's stop and target unless finer candles cover it.
+10. **Short days (assumption).** If a day ends before any candle ends after `exit_time` and a day-trade position is open, it is closed at the close of that day's last candle (known only once the next day's first candle arrives).
+11. **Zero risk (assumption).** With `entry_offset_ticks` and `stop_offset_ticks` both 0 and `C3` as the stop, a c3 whose high equals its low gives an entry equal to the stop, so the quantity cannot be sized; that signal is dropped.
 
-**Worked example for the first golden test** (tick R$ 0.01, lot 100, capital R$ 100,000, max risk R$ 200, `risk_factor` 2, `c2_low` stop, offset 1, validity 1, no filter):
+**Worked example for the first golden test** (tick R$ 0.01, lot 100, capital R$ 100,000, max risk R$ 200, the moving-average checks off, `C3` stop with offset 1, `RISK` target with multiple 2, offset 1, validity 1):
 
 | Candle | Open | High | Low | Close | What happens |
 | --- | --- | --- | --- | --- | --- |
-| c1 | 10.20 | 10.40 | 10.10 | 10.30 | Reference candle |
-| c2 | 10.30 | 10.60 | 10.20 | 10.50 | Highest high of the three |
-| c3 | 10.50 | 10.55 | 10.35 | 10.40 | Lower high than c2: signal. Trigger 10.56, stop 10.20, target 11.28 |
-| c4 | 10.40 | 10.58 | 10.38 | 10.55 | High reaches 10.56: entry fills at 10.56 |
-| c5 | 10.55 | 11.30 | 10.50 | 11.25 | High reaches 11.28: exit at target |
+| c1 | 10.50 | 10.60 | 10.40 | 10.45 | Oldest candle |
+| c2 | 10.45 | 10.50 | 10.20 | 10.30 | Lowest low of the three |
+| c3 | 10.30 | 10.40 | 10.25 | 10.38 | Higher low than c2: signal. Entry 10.41, stop 10.24, target 10.75 |
+| c4 | 10.38 | 10.45 | 10.35 | 10.44 | High reaches 10.41: entry fills at 10.41 |
+| c5 | 10.44 | 10.80 | 10.40 | 10.78 | High reaches 10.75: exit at target |
 
-Expected result: risk per share 0.36, quantity `floor(200 / 0.36) = 555`, rounded down to the lot, 500 shares. PnL is 500 times 0.72, which is **+R$ 360.00**, exactly 2.0 R of the risk actually taken (500 times 0.36 = R$ 180). With `inside_bar` on, the same series gives no trade, because c3's low (10.35) is above c2's low (10.20).
+Expected result: risk per share 0.17, quantity `floor(200 / 0.17) = 1176`, rounded down to the lot, 1100 shares. PnL is 1100 times 0.34, which is **+R$ 374.00**, exactly 2.0 R. The amplitude is 10.60 minus 10.20 = 0.40.
 
-**Golden cases to write, one test each:** the worked example above; the same setup where c4 also reaches the stop (stop wins); a gap-up open above the trigger; stop and target both inside one candle; gap through the stop and through the target; trigger never reached within the validity window, and reached on the second candle with validity 2; `c3_low` stop; `amplitude` target; inside bar on and off; a signal discarded because the stop is above the trigger; quantity rounding to zero; the day-trade cases (forced exit ignoring the exit candle's range, no overnight order, entry window edges, the exit candle never an entry, stop still working, short day, finer-candle pinpoint with stop, target and plain exit, policy `last_candle_open`).
+**Golden cases to write, one test each:** the worked example; the entry candle also reaching the stop; a gap-up fill with frozen levels (quantity from the actual fill, target unchanged); a fill that gaps past the target; stop and target inside one candle; gap through the stop and through the target; trigger never reached within the validity window, and reached on the second bar with validity 2; the `C2` stop, the stop offset and the entry offset; the `AMP` target; the size filter at its edge; each trend check on and off; quantity rounding to zero; the capital cap; equal lows not forming the pattern; the day-trade cases (forced exit at the close, at the open and pinpointed with finer candles, an order carried overnight, entry window edges, the exit candle never an entry, stop still working, short day).
 
-**Not specified yet, blocked by an open question:** the mirror 123 de venda. It is not implemented until the owner answers.
+**Not specified yet, blocked by an open question:** the mirror 123 de venda.
 
 ## 8. Testing strategy
 
@@ -379,10 +389,11 @@ Nothing merges to `main` unless the quality gates pass, and each phase has an ex
 
 **Open questions (resolve before the phase that needs them):**
 
-- [x] 123 de compra definition: the owner chose the QuantBrasil-style rules (Oct 4, 2026), written in section 7.
-- [ ] Sign off the section 7 assumptions: strict highs comparison, stop check on the entry candle, gap fills on exit, discarded signals with stop above trigger, no trade below one lot, one working order or position, open position at end of data, zero-PnL trades.
-- [x] Day-trade mode: the owner gave the rules and the 16:30 exit time (Oct 4, 2026), written in section 7.
-- [ ] Sign off the day-trade assumptions in section 7 (items 8 and 9) and the `last_candle_open` stopgap, and export a finer timeframe (M30 or M15) from MT5 to pinpoint 16:30.
+- [x] 123 de compra definition: the owner supplied pseudocode on Oct 4, 2026 (lowest-low pattern, EMA trend context, frozen levels), written in section 7. It replaces the earlier QuantBrasil-page reading.
+- [ ] Sign off the section 7 assumptions: entry-candle stop check, gap fills on exit (and a fill gapping past the target), no trade below one lot, one working order or position, open position at end of data, zero-PnL trades, EMA seed and warm-up, day-trade exit candle and short days, zero risk.
+- [x] Day-trade mode: the owner gave the rules and the 16:30 exit time; orders may carry overnight and the forced exit is priced at the exit candle's close by default (Oct 4, 2026).
+- [ ] Export a finer timeframe (M30 or M15) from MT5 to pinpoint 16:30 with policy `auto`.
+- [ ] Explain the vendor differences found against the QuantBrasil sample trades (opening and closing auction handling in the first and last candle of the day), recorded in `docs/data-notes.md`.
 - [ ] Define 123 de venda.
 - [ ] Choose the MVP instrument universe, for example a few liquid stocks, one ETF and one index.
 - [ ] Find out whether the broker's MT5 history is adjusted and how deep H1 and H2 go.
@@ -462,7 +473,7 @@ The optimizer searches a strategy's parameter space for the combination that sco
 - A period split: in-sample for the search, out-of-sample to validate the best results.
 - A budget: maximum evaluations and maximum time.
 
-**Grid or genetic algorithm.** For the 123 strategy a grid is probably enough. For example, `risk_factor` from 1 to 5 in steps of 0.5 (9 values), `entry_offset_ticks` from 0 to 3 (4) and `entry_validity_candles` from 1 to 5 (5) give 180 combinations, and at the 200 ms engine budget that takes well under a minute. Adding entry-window times, say 8 values each, gives about 11,500 combinations, which is tens of minutes on one core. A genetic algorithm pays off from there upward, and the grid still has one advantage: it produces the full map of results, which is the best overfitting diagnostic. Build both.
+**Grid or genetic algorithm.** For the 123 strategy a grid is probably enough. For example, `target_mult` from 1 to 5 in steps of 0.5 (9 values), `entry_offset_ticks` from 0 to 3 (4) and `entry_validity_bars` from 1 to 5 (5) give 180 combinations, and at the 200 ms engine budget that takes well under a minute. Adding entry-window times, say 8 values each, gives about 11,500 combinations, which is tens of minutes on one core. A genetic algorithm pays off from there upward, and the grid still has one advantage: it produces the full map of results, which is the best overfitting diagnostic. Build both.
 
 **Design rules:**
 

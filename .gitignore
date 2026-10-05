@@ -2,6 +2,9 @@
 data/
 samples/
 
+# Screenshots of the reference product (its UI is not ours to redistribute)
+notebooks/sample_trades/
+
 # Secrets
 .env
 .env.*
