@@ -165,7 +165,7 @@ def _slice(arrs, a, b):
 
 
 def portfolio_backtest(data, params: Optional[dict] = None, max_positions: int = 10,
-                       initial_capital: float = 100_000, reinvest: bool = True,
+                       initial_capital: float = 100_000, reinvest: bool = False,
                        cost_pct: float = 0.0, cost_per_trade: float = 0.0, lot: int = 1,
                        start=None, end=None, strategy_fn=None, universe: Optional[Universe] = None
                        ) -> PortfolioResult:
@@ -198,7 +198,7 @@ def portfolio_backtest(data, params: Optional[dict] = None, max_positions: int =
 # --------------------------------------------------------------------------- optimizer
 def optimize_portfolio(data, grid: Dict, fixed: Optional[Dict] = None, oos_start="2021-01-01",
                        max_positions: int = 10, objective: str = "calmar",
-                       initial_capital: float = 100_000, reinvest: bool = True,
+                       initial_capital: float = 100_000, reinvest: bool = False,
                        cost_pct: float = 0.0, cost_per_trade: float = 0.0, lot: int = 1,
                        min_trades: int = 30, strategy_fn=None, top: Optional[int] = 25,
                        dedupe_results: bool = True, verbose: bool = True) -> pd.DataFrame:

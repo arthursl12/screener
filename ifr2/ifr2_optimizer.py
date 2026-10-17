@@ -132,6 +132,7 @@ def run_backtest(sig: pd.DataFrame, initial_capital=10_000, max_days=None,
                  reinvest=False, cost_per_trade=0.0, lot=100, cost_pct=0.0):
     buy, sell, close = sig["Buy Price"].values, sig["Sell Price"].values, sig["Close"].values
     cap, profits, durations = [initial_capital], [], []
+    equity = np.empty(len(sig))                          # balance + floating PnL, marked at each close
     ongoing, days, entry, shares = False, 0, 0.0, 0
     for i in range(len(sig)):
         if ongoing:
@@ -148,27 +149,46 @@ def run_backtest(sig: pd.DataFrame, initial_capital=10_000, max_days=None,
             base = cap[-1] if reinvest else initial_capital
             shares = _lot(base / buy[i], lot)
             entry, days, ongoing = buy[i], 0, shares > 0
-    return profits, cap, durations
+        floating = (shares * (close[i] - entry) - cost_per_trade
+                    - cost_pct / 100.0 * shares * entry) if ongoing else 0.0
+        equity[i] = cap[-1] + floating
+    return profits, cap, durations, equity
 
 
-def compute_stats(profits, cap, durations):
+def _max_drawdown_pct(curve, start):
+    peak = np.maximum.accumulate(np.r_[start, curve])
+    return float((100 * (peak - np.r_[start, curve]) / peak).max())
+
+
+def compute_stats(profits, cap, durations, equity, years):
+    """
+    max_dd_balance : drawdown of the closed-trade balance (what MT5 calls balance drawdown)
+    max_dd         : drawdown of the daily equity curve, open trades marked at the close
+                     (MT5 equity drawdown) - the real risk, and the one `calmar` uses
+    cagr_pct       : annualised return over `years`; calmar = cagr_pct / max_dd
+    """
     n = len(profits)
     if n == 0:
-        return dict(trades=0, win_rate=np.nan, profit=0.0, profit_pct=0.0, max_dd=np.nan,
-                    profit_factor=np.nan, calmar=np.nan, avg_days=np.nan, expectancy=np.nan)
+        return dict(trades=0, win_rate=np.nan, profit=0.0, profit_pct=0.0, cagr_pct=0.0,
+                    max_dd=np.nan, max_dd_balance=np.nan, profit_factor=np.nan, calmar=np.nan,
+                    avg_days=np.nan, expectancy=np.nan)
     p = np.array(profits)
-    s = pd.Series(cap)
-    dd = (100 * (s.cummax() - s) / s.cummax()).max()
+    dd_balance = _max_drawdown_pct(cap[1:], cap[0])
+    dd = _max_drawdown_pct(equity, cap[0])
     gross_win, gross_loss = p[p > 0].sum(), -p[p < 0].sum()
     pct = 100 * p.sum() / cap[0]
+    final = cap[0] + p.sum()
+    cagr = 100 * ((final / cap[0]) ** (1 / years) - 1) if final > 0 else -100.0
     return dict(
         trades=n,
         win_rate=round(100 * (p > 0).mean(), 2),
         profit=round(p.sum(), 2),
         profit_pct=round(pct, 2),
+        cagr_pct=round(cagr, 2),
         max_dd=round(dd, 2),
+        max_dd_balance=round(dd_balance, 2),
         profit_factor=round(gross_win / gross_loss, 2) if gross_loss > 0 else np.inf,
-        calmar=round(pct / dd, 2) if dd > 0 else np.inf,
+        calmar=round(cagr / dd, 2) if dd > 0 else np.inf,
         avg_days=round(np.mean(durations), 2),
         expectancy=round(p.mean(), 2),
     )
@@ -248,8 +268,9 @@ def optimize(
             sig = fn(frame, **sig_params)
             if "Close" not in sig:
                 sig = sig.assign(Close=frame["Close"].values)
+            years = max((frame.index[-1] - frame.index[0]).days / 365.25, 1e-9)
             st = compute_stats(*run_backtest(sig, initial_capital, p["max_days"],
-                                             reinvest, cost_per_trade, lot, cost_pct))
+                                             reinvest, cost_per_trade, lot, cost_pct), years=years)
             out.append(st)
         return out
 
