@@ -189,6 +189,18 @@ def test_the_equity_curve_marks_the_open_position_at_each_close() -> None:
     assert result.metrics.cagr is not None
 
 
+def test_the_equity_curve_charges_the_entry_cost_while_the_position_is_open() -> None:
+    # 0.03 % on the entry: 0.0003 * 93 * 9.50 = 0.26505 off the equity from bar 4 on.
+    # Bar 5 (close 9.30): 93 * -0.20 - 0.26505 -> 9981.13495.
+    # Bar 6 exits at the target 9.90: pnl 93 * 0.40 - 0.0003 * 93 * (9.50 + 9.90) = 36.65874.
+    r5: Row = (9.50, 9.60, 9.20, 9.30)
+    r6: Row = (9.30, 10.40, 9.30, 10.30)
+
+    result = run_ifr2(candles([R0, R1, R2, R3, R4, r5, r6]), config(cost_pct=0.03))
+
+    assert list(result.equity)[4:] == pytest.approx([9_999.73495, 9_981.13495, 10_036.65874])
+
+
 REENTRY_ROWS: list[Row] = [
     R0,
     R1,
