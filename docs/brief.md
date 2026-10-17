@@ -399,7 +399,17 @@ Nothing merges to `main` unless the quality gates pass, and each phase has an ex
 - [ ] Find out whether the broker's MT5 history is adjusted and how deep H1 and H2 go.
 - [ ] Confirm B3 session hours per asset class. The day-trade exit time is a parameter, set to 16:30 for the owner's case; the official value is not recorded.
 - [ ] Confirm the timezone of MT5 exported bar times. Working assumption: `America/Sao_Paulo` wall-clock time (the owner says broker and B3 share a timezone, but cannot say which one the export uses). Verify against the B3 calendar and record in `docs/data-notes.md`.
-- [ ] Approve the `score_v1` formula in `docs/score.md`.
+- [x] Approve the `score_v1` formula in `docs/score.md` (owner approved, Oct 17, 2026). Out-of-sample stays a separate flag, not part of the score.
+- [ ] IFR2 (RSI 2) rules, decided by the owner on Oct 17, 2026; the owner writes them as a new subsection of section 7, and the items below are pinned by tests first:
+  - [x] Entry at the close of the signal candle (live: the order goes in about 10 minutes before the close). This is a named exception to section 6 rule 1, a setting rather than a silent change.
+  - [x] Exit on a bar: the highest-high target fills at the target price, or at the open when the bar gaps above it; the time stop and the RSI exit fill at the close. When several fire on the same bar, the target wins (assumption, needs a test).
+  - [x] Re-entry on the same bar as an exit: off by default, kept as a boolean parameter so the optimizer can search it.
+  - [x] Warm-up: signals are ignored until the RSI has `period` bars (assumption, needs a test).
+  - [x] Sizing: ATR-based. Quantity = max risk / (k x ATR(n)), rounded down to the lot, capped by available capital. The ATR distance sizes the position and is not an exit, because the strategy has no stop. Capital-fraction sizing is a later, simpler mode.
+  - [ ] ATR details: Wilder smoothing, default period and default k (no value chosen yet), and what happens when the ATR is zero or not yet available.
+  - [x] Lot size 1, raw (split-adjusted, not dividend-adjusted) prices with dividends ignored, costs of 0.03% per side as the IFR2 preset (the engine default stays 0), fixed capital with no reinvestment.
+  - [ ] Confirm the B3 fee of 0.03% per side (0.005% trading + 0.025% settlement) against B3's published table; the figure comes from a research note.
+  - [ ] Report equity drawdown (open trades marked at the close) next to balance drawdown (closed trades only), and rank on equity. Decide whether to use the intraday low for the worst case.
 - [ ] Pick the repo license and the hosting target for the demo.
 
 ## 11. Learning mode
