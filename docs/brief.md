@@ -406,7 +406,7 @@ Nothing merges to `main` unless the quality gates pass, and each phase has an ex
   - [x] Re-entry on the same bar as an exit: off by default, kept as a boolean parameter so the optimizer can search it.
   - [x] Warm-up: signals are ignored until the RSI has `period` bars (assumption, needs a test).
   - [x] Sizing: ATR-based. Quantity = max risk / (k x ATR(n)), rounded down to the lot, capped by available capital. The ATR distance sizes the position and is not an exit, because the strategy has no stop. Capital-fraction sizing is a later, simpler mode.
-  - [ ] ATR details: Wilder smoothing, default period and default k (no value chosen yet), and what happens when the ATR is zero or not yet available.
+  - [x] ATR details (owner, Oct 17, 2026): Wilder smoothing; `atr_period` (default 5) and `atr_mult` k (default 2) are both parameters the optimizer can search. Zero or not-yet-available ATR: skip the signal (assumption, needs a test; owner did not answer).
   - [x] Lot size 1, raw (split-adjusted, not dividend-adjusted) prices with dividends ignored, costs of 0.03% per side as the IFR2 preset (the engine default stays 0), fixed capital with no reinvestment.
   - [ ] Confirm the B3 fee of 0.03% per side (0.005% trading + 0.025% settlement) against B3's published table; the figure comes from a research note.
   - [ ] Report equity drawdown (open trades marked at the close) next to balance drawdown (closed trades only), and rank on equity. Decide whether to use the intraday low for the worst case.
