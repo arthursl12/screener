@@ -290,16 +290,16 @@ Expected result: risk per share 0.17, quantity `floor(200 / 0.17) = 1176`, round
 
 **Not specified yet, blocked by an open question:** the mirror 123 de venda.
 
-**IFR2 (RSI 2) de compra. DRAFT drafted by Claude from the owner's decisions of Oct 17, 2026; the owner rewrites it in their own words and signs off the assumptions.** The idea comes from the research notes in `ifr2/`, which are secondary sources whose numbers are not verified. The rules below are the only IFR2 rules the engine implements. Long only, daily candles only (the strategy refuses any other timeframe).
+**IFR2 (RSI 2) de compra. Drafted by Claude from the owner's decisions of Oct 17, 2026; the owner reviewed it, signed off the assumptions and widened two grids. The owner still rewrites it in their own words.** The idea comes from the research notes in `ifr2/`, which are secondary sources whose numbers are not verified. The rules below are the only IFR2 rules the engine implements. Long only, daily candles only (the strategy refuses any other timeframe).
 
 - **Indicators**, on the raw close (split-adjusted, dividends ignored): `RSI` with Wilder smoothing over `rsi_period`, and `ATR` with Wilder smoothing over `atr_period` (both in `indicators.py`).
 - **Signal:** on a closed candle t, `RSI[t] <= rsi_entry`. While `RSI` or `ATR` is not yet available (the first `max(rsi_period, atr_period)` bars), the signal is ignored.
 - **Entry:** a buy at `Close[t]`, the close of the signal candle. This is a named exception to section 6, rule 1 (a signal fills no earlier than the next candle): it is a fixed property of IFR2, called `entry_at_signal_close`, with its own test. Live, the order goes in about 10 minutes before the close, so the backtest fill is an approximation of it. An entry needs no open position (section 6, rule 8). When the previous trade exited on this same candle, a new entry is allowed only if `allow_same_day_reentry` is on.
 - **Sizing:** `quantity = max_risk_brl / (atr_mult * ATR[t])`, rounded down to the lot and capped so that `quantity * entry` does not exceed `capital_brl`. The ATR distance only sizes the position. It is not a stop, because IFR2 has none, so a bad trade can lose more than `max_risk_brl`. If `ATR[t]` is zero or missing, or the quantity rounds to zero, no trade is taken.
-- **Exits.** From the candle after the entry, in this order of precedence when several fire on the same candle:
+- **Exits.** From the candle after the entry. Which exits are on follows `exit_mode`, plus the time stop when `max_days` is set. The target comes first; when several fire on the same candle the order is target, then time stop, then RSI exit:
   1. **Target** (`exit_mode` `target` or `target_or_rsi`): `target` is the highest high of the previous `target_lookback` candles, not including the current one, and it moves every candle. When `High[t] > target`, the exit fills at `target`, or at `Open[t]` if the candle opens above it.
-  2. **RSI exit** (`exit_mode` `rsi` or `target_or_rsi`): when `RSI[t] >= rsi_exit`, the exit fills at `Close[t]`.
-  3. **Time stop:** after `max_days` candles in the trade (`none` means off), the exit fills at `Close[t]`. The entry candle is day 0, so `max_days` 1 exits at the close of the next candle.
+  2. **Time stop:** after `max_days` candles in the trade (`none` means off), the exit fills at `Close[t]`. The entry candle is day 0, so `max_days` 1 exits at the close of the next candle.
+  3. **RSI exit** (`exit_mode` `rsi` or `target_or_rsi`): when `RSI[t] >= rsi_exit`, the exit fills at `Close[t]`.
 - **No stop loss.** The research notes report that stops usually hurt mean reversion, and gaps jump past them anyway. Risk is managed by sizing, the time stop and the choice of instruments.
 - **Costs:** `cost_pct` percent of traded value on each side. The IFR2 preset is 0.03; the engine default stays 0 so golden tests stay readable (section 6, rule 9). Fixed capital, no compounding (section 6, rule 7).
 
@@ -308,10 +308,10 @@ Expected result: risk per share 0.17, quantity `floor(200 / 0.17) = 1176`, round
 | Parameter | Default | Range or grid | Notes |
 | --- | --- | --- | --- |
 | `rsi_period` | 2 | 2 to 4 | Wilder RSI length |
-| `rsi_entry` | 30 | 10 to 40, step 5 | Buy when RSI is at or below this |
+| `rsi_entry` | 30 | 5 to 40, step 5 | Buy when RSI is at or below this |
 | `exit_mode` | `target` | `target`, `rsi`, `target_or_rsi` | Which exits are on (the time stop is separate) |
 | `rsi_exit` | 70 | 50 to 80, step 10 | Only used when the mode has `rsi`; must be above `rsi_entry` |
-| `target_lookback` | 2 | 2 to 5 | Only used when the mode has `target` |
+| `target_lookback` | 2 | 2 to 10, step 1 | Only used when the mode has `target` |
 | `max_days` | none | none, 3, 5, 7, 9 | Time stop in candles; none means off |
 | `allow_same_day_reentry` | off | on or off | Entry on the candle where the previous trade exited |
 | `atr_period` | 5 | 2 or more | Wilder ATR length |
@@ -323,16 +323,16 @@ Expected result: risk per share 0.17, quantity `floor(200 / 0.17) = 1176`, round
 
 `rsi_exit` and `target_lookback` are conditional: the optimizer drops combinations where the chosen `exit_mode` makes them irrelevant (no duplicate runs), and combinations with `rsi_entry >= rsi_exit`.
 
-**IFR2 engine assumptions, all pending sign-off:**
+**IFR2 engine assumptions (owner signed off Oct 17, 2026):**
 
-1. **Comparisons are inclusive or strict as written:** `RSI <= rsi_entry`, `RSI >= rsi_exit`, and `High > target` (assumption).
-2. **Entry candle (assumption).** Exits are not evaluated on the entry candle itself, because the entry is at its close.
-3. **Exit precedence (assumption).** Target, then RSI exit, then time stop.
-4. **Gap above the target (assumption).** The exit fills at the open, a better price than the target, as in the prototype. There is no gap case for losses because there is no stop.
-5. **Flat RSI window (assumption).** A window with no gains and no losses gives no RSI value, so there is no signal. TA-Lib would return 0, which would read as oversold.
+1. **Comparisons are inclusive or strict as written:** `RSI <= rsi_entry`, `RSI >= rsi_exit`, and `High > target`. Equality is rare with floating-point values, so this only matters in hand-computed tests.
+2. **Entry candle.** Exits are not evaluated on the entry candle itself, because the entry is at its close.
+3. **Exit order.** The target comes first and fills at its own price. The time stop and the RSI exit both fill at the close, so their order only decides the exit reason: `time` when both fire (the owner's order is target, time stop, RSI exit).
+4. **Gap above the target.** The exit fills at the open, a better price than the target, as in the prototype. There is no gap case for losses because there is no stop.
+5. **Flat RSI window.** A window with no gains and no losses gives no RSI value, so there is no signal. TA-Lib would return 0, which would read as oversold.
 6. **Open position at the end of the data** is not a closed trade and is left out (same as 123, assumption 6).
 7. **Dividends and JCP are ignored.** Trades through an ex-date book the price drop without the payment, which is pessimistic. Holds are short, so the effect is expected to be small.
-8. **Fill at the close is optimistic.** The real close is an auction price. Slippage is not modelled yet.
+8. **Fill at the close is optimistic.** The real close is an auction price. Slippage is not modelled yet, and stays that way for now.
 
 **Worked example for the first IFR2 golden test** (daily candles, `rsi_period` 2, `rsi_entry` 30, `exit_mode` `target`, `target_lookback` 2, `max_days` none, `atr_period` 2, `atr_mult` 2, `max_risk_brl` 100, `capital_brl` 10,000, `lot_size` 1, no costs):
 
@@ -470,7 +470,8 @@ Nothing merges to `main` unless the quality gates pass, and each phase has an ex
   - [x] Lot size 1, raw (split-adjusted, not dividend-adjusted) prices with dividends ignored, costs of 0.03% per side as the IFR2 preset (the engine default stays 0), fixed capital with no reinvestment.
   - [ ] Confirm the B3 fee of 0.03% per side (0.005% trading + 0.025% settlement) against B3's published table; the figure comes from a research note.
   - [ ] Report equity drawdown (open trades marked at the close) next to balance drawdown (closed trades only), and rank on equity. Decide whether to use the intraday low for the worst case.
-- [ ] Owner rewrites the IFR2 subsection of section 7 in their own words and signs off its assumptions (draft written Oct 17, 2026).
+- [x] IFR2 assumptions in section 7 signed off by the owner (Oct 17, 2026), including exit order target, time stop, RSI exit.
+- [ ] Owner rewrites the IFR2 subsection of section 7 in their own words.
 - [ ] Pick the repo license and the hosting target for the demo.
 
 ## 11. Learning mode
