@@ -1,9 +1,9 @@
-"""EMA, trend context and RSI, brief section 7. Expected values are worked out by hand."""
+"""EMA, trend context, RSI and ATR, brief section 7. Expected values are worked out by hand."""
 
 import numpy as np
 import pytest
 
-from b3core.indicators import ema, rsi, trend_context
+from b3core.indicators import atr, ema, rsi, trend_context
 
 ALL_OFF = {
     "use_ma_order": False,
@@ -117,3 +117,48 @@ def test_rsi_matches_ta_lib_on_a_seeded_random_walk() -> None:
     for period in (2, 3, 14):
         expected = talib.RSI(close, timeperiod=period)
         assert rsi(close, period) == pytest.approx(expected, nan_ok=True)
+
+
+HIGH = np.array([10.0, 12.0, 11.0, 13.0, 13.0])
+LOW = np.array([8.0, 10.0, 9.0, 12.0, 11.0])
+CLOSE = np.array([9.0, 11.0, 10.0, 13.0, 12.0])
+
+
+def test_atr_uses_true_range_and_wilder_smoothing() -> None:
+    # true range = max(high - low, |high - prev close|, |low - prev close|), from bar 1:
+    # 3 (gap up from 9), 2, 3 (gap up from 10), 2. Period 2: seed (3 + 2) / 2 = 2.5 on bar 2,
+    # then (2.5 + 3) / 2 = 2.75, then (2.75 + 2) / 2 = 2.375.
+    result = atr(HIGH, LOW, CLOSE, 2)
+
+    assert np.isnan(result[:2]).all()
+    assert result[2:] == pytest.approx([2.5, 2.75, 2.375])
+
+
+def test_atr_of_period_one_is_the_true_range() -> None:
+    assert atr(HIGH, LOW, CLOSE, 1)[1:] == pytest.approx([3.0, 2.0, 3.0, 2.0])
+
+
+def test_atr_with_too_few_bars_is_all_undefined() -> None:
+    assert np.isnan(atr(HIGH[:2], LOW[:2], CLOSE[:2], 2)).all()
+
+
+def test_atr_rejects_a_period_below_one() -> None:
+    with pytest.raises(ValueError, match="period"):
+        atr(HIGH, LOW, CLOSE, 0)
+
+
+def test_atr_rejects_series_of_different_lengths() -> None:
+    with pytest.raises(ValueError, match="length"):
+        atr(HIGH, LOW[:-1], CLOSE, 2)
+
+
+def test_atr_matches_ta_lib_on_a_seeded_random_walk() -> None:
+    talib = pytest.importorskip("talib")
+    rng = np.random.default_rng(11)
+    close = 20 * np.exp(np.cumsum(rng.normal(0, 0.02, 500)))
+    high = close * (1 + np.abs(rng.normal(0, 0.01, 500)))
+    low = close * (1 - np.abs(rng.normal(0, 0.01, 500)))
+
+    for period in (2, 5, 14):
+        expected = talib.ATR(high, low, close, timeperiod=period)
+        assert atr(high, low, close, period) == pytest.approx(expected, nan_ok=True)
