@@ -1,4 +1,4 @@
-"""Moving averages and the trend context of 123 de compra (brief section 7). Pure numpy."""
+"""Moving averages, the trend context of 123 de compra and RSI (brief section 7). Pure numpy."""
 
 import numpy as np
 import pandas as pd
@@ -11,6 +11,37 @@ def ema(values: NDArray[np.float64], period: int) -> NDArray[np.float64]:
         pd.Series(values).ewm(span=period, adjust=False).mean().to_numpy(dtype=np.float64)
     )
     return smoothed
+
+
+def _rsi_value(avg_gain: float, avg_loss: float) -> float:
+    if avg_loss == 0:
+        return float("nan") if avg_gain == 0 else 100.0
+    return 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
+
+
+def rsi(values: NDArray[np.float64], period: int) -> NDArray[np.float64]:
+    """Wilder's RSI. The first value is on bar `period`; earlier bars are NaN.
+
+    The first average gain and loss are simple means of the first `period` changes, then
+    `avg = (avg * (period - 1) + change) / period`. This matches TA-Lib. A window with no
+    gains and no losses (0 / 0) is NaN, so a flat start never reads as oversold.
+    """
+    if period < 1:
+        raise ValueError("period must be at least 1")
+    result = np.full(len(values), np.nan)
+    if len(values) <= period:
+        return result
+    change = np.diff(values)
+    gains = np.maximum(change, 0.0)
+    losses = np.maximum(-change, 0.0)
+    avg_gain = float(gains[:period].mean())
+    avg_loss = float(losses[:period].mean())
+    result[period] = _rsi_value(avg_gain, avg_loss)
+    for bar in range(period + 1, len(values)):
+        avg_gain = (avg_gain * (period - 1) + gains[bar - 1]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[bar - 1]) / period
+        result[bar] = _rsi_value(avg_gain, avg_loss)
+    return result
 
 
 def _shifted(previous_and_current: NDArray[np.bool_], lag: int) -> NDArray[np.bool_]:

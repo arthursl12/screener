@@ -1,9 +1,9 @@
-"""EMA and trend context, brief section 7. Expected values are worked out by hand."""
+"""EMA, trend context and RSI, brief section 7. Expected values are worked out by hand."""
 
 import numpy as np
 import pytest
 
-from b3core.indicators import ema, trend_context
+from b3core.indicators import ema, rsi, trend_context
 
 ALL_OFF = {
     "use_ma_order": False,
@@ -69,3 +69,51 @@ def test_all_enabled_checks_must_pass_together() -> None:
     assert context([10, 12, 14], 2, 3, **flags) == [False, True, True]
     # bar 1 passes every check (fast 12.67 > slow 12, both rising); bar 2 fails the fast slope
     assert context([10, 14, 12], 2, 3, **flags) == [False, True, False]
+
+
+def test_rsi_uses_wilder_smoothing_seeded_with_a_simple_average() -> None:
+    # period 2, changes +1 -1 +2 -1. Seed (bar 2): gain 0.5, loss 0.5 -> RSI 50.
+    # bar 3: gain (0.5 + 2) / 2 = 1.25, loss 0.5 / 2 = 0.25 -> RS 5 -> 100 - 100 / 6.
+    # bar 4: gain 1.25 / 2 = 0.625, loss (0.25 + 1) / 2 = 0.625 -> RSI 50.
+    result = rsi(np.array([10.0, 11.0, 10.0, 12.0, 11.0]), 2)
+
+    assert np.isnan(result[:2]).all()
+    assert result[2:] == pytest.approx([50.0, 100 - 100 / 6, 50.0])
+
+
+def test_rsi_is_100_when_there_are_only_gains() -> None:
+    result = rsi(np.array([10.0, 11.0, 12.0, 13.0]), 2)
+
+    assert result[2:] == pytest.approx([100.0, 100.0])
+
+
+def test_rsi_is_0_when_there_are_only_losses() -> None:
+    result = rsi(np.array([13.0, 12.0, 11.0, 10.0]), 2)
+
+    assert result[2:] == pytest.approx([0.0, 0.0])
+
+
+def test_rsi_is_undefined_when_the_seed_window_is_flat() -> None:
+    # no gains and no losses: 0 / 0, so no value (and no signal) rather than a made-up one
+    result = rsi(np.array([10.0, 10.0, 10.0, 11.0]), 2)
+
+    assert np.isnan(result[:3]).all()
+    assert result[3] == pytest.approx(100.0)
+
+
+def test_rsi_with_fewer_bars_than_needed_is_all_undefined() -> None:
+    assert np.isnan(rsi(np.array([10.0, 11.0]), 2)).all()
+
+
+def test_rsi_rejects_a_period_below_one() -> None:
+    with pytest.raises(ValueError, match="period"):
+        rsi(np.array([10.0, 11.0, 12.0]), 0)
+
+
+def test_rsi_matches_ta_lib_on_a_seeded_random_walk() -> None:
+    talib = pytest.importorskip("talib")
+    close = 20 * np.exp(np.cumsum(np.random.default_rng(7).normal(0, 0.02, 500)))
+
+    for period in (2, 3, 14):
+        expected = talib.RSI(close, timeperiod=period)
+        assert rsi(close, period) == pytest.approx(expected, nan_ok=True)
