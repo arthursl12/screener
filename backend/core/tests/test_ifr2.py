@@ -173,6 +173,22 @@ def test_no_new_entry_while_a_position_is_open() -> None:
     assert t.pnl == pytest.approx(93 * 0.40)
 
 
+def test_the_equity_curve_marks_the_open_position_at_each_close() -> None:
+    # same series as above: bar 5 closes at 9.30, so the open 93 shares are 18.60 under water
+    # (equity 9981.40) before the bar 6 exit books +37.20.
+    r5: Row = (9.50, 9.60, 9.20, 9.30)
+    r6: Row = (9.30, 10.40, 9.30, 10.30)
+
+    result = run_ifr2(candles([R0, R1, R2, R3, R4, r5, r6]), config())
+
+    assert list(result.equity) == pytest.approx(
+        [10_000, 10_000, 10_000, 10_000, 10_000, 9_981.40, 10_037.20]
+    )
+    assert result.metrics.max_equity_drawdown == pytest.approx(18.60 / 10_000)
+    assert result.metrics.max_drawdown == 0  # the closed trade is a winner: no balance dip
+    assert result.metrics.cagr is not None
+
+
 REENTRY_ROWS: list[Row] = [
     R0,
     R1,

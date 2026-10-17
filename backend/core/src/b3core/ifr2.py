@@ -1,7 +1,7 @@
 """IFR2 (RSI 2) de compra engine. Rules: brief section 7. Pure: no I/O, no clock."""
 
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import numpy as np
@@ -108,10 +108,18 @@ class Ifr2Trade:
 class Ifr2Result:
     config: Ifr2Config
     trades: list[Ifr2Trade]
+    # One value per candle: capital plus closed PnL plus the open position marked at the close.
+    equity: NDArray[np.float64] = field(compare=False, repr=False)
+    years: float | None  # length of the data in years; None below two candles apart in time
 
     @property
     def metrics(self) -> Metrics:
-        return compute_metrics([t.pnl for t in self.trades], self.config.capital_brl)
+        return compute_metrics(
+            [t.pnl for t in self.trades],
+            self.config.capital_brl,
+            equity=self.equity,
+            years=self.years,
+        )
 
 
 def _target_levels(high: NDArray[np.float64], lookback: int) -> NDArray[np.float64]:
@@ -160,12 +168,15 @@ def run_ifr2(
     cost_rate = config.cost_pct / 100.0
 
     trades: list[Ifr2Trade] = []
+    equity = np.empty(len(close))
+    realized = 0.0
     in_trade = False
     entry_bar = 0
     entry_price = 0.0
     qty = 0
 
     for t in range(len(close)):
+        exited_now = False
         if in_trade:
             days = t - entry_bar
             exit_price: float | None = None
@@ -177,31 +188,40 @@ def run_ifr2(
                 exit_price, reason = float(close[t]), "time"
             elif config.uses_rsi_exit and rsi_values[t] >= config.rsi_exit:
                 exit_price, reason = float(close[t]), "rsi"
-            if exit_price is None:
-                continue
-            costs = cost_rate * qty * (entry_price + exit_price)
-            trades.append(
-                Ifr2Trade(
-                    n=len(trades) + 1,
-                    entry_index=entry_bar,
-                    exit_index=t,
-                    entry_ts=ts.iloc[entry_bar],
-                    exit_ts=ts.iloc[t],
-                    entry=entry_price,
-                    exit=exit_price,
-                    qty=qty,
-                    pnl=qty * (exit_price - entry_price) - costs,
-                    days=days,
-                    exit_reason=reason,
+            if exit_price is not None:
+                pnl = qty * (exit_price - entry_price) - cost_rate * qty * (
+                    entry_price + exit_price
                 )
-            )
-            in_trade = False
-            if not config.allow_same_day_reentry:
-                continue
+                trades.append(
+                    Ifr2Trade(
+                        n=len(trades) + 1,
+                        entry_index=entry_bar,
+                        exit_index=t,
+                        entry_ts=ts.iloc[entry_bar],
+                        exit_ts=ts.iloc[t],
+                        entry=entry_price,
+                        exit=exit_price,
+                        qty=qty,
+                        pnl=pnl,
+                        days=days,
+                        exit_reason=reason,
+                    )
+                )
+                realized += pnl
+                in_trade = False
+                exited_now = True
 
-        if rsi_values[t] <= config.rsi_entry:  # False while the RSI is NaN
+        can_enter = not in_trade and (not exited_now or config.allow_same_day_reentry)
+        if can_enter and rsi_values[t] <= config.rsi_entry:  # False while the RSI is NaN
             size = _quantity(float(close[t]), float(atr_values[t]), config)
             if size > 0:
                 in_trade, entry_bar, entry_price, qty = True, t, float(close[t]), size
 
-    return Ifr2Result(config=config, trades=trades)
+        floating = (
+            qty * (close[t] - entry_price) - cost_rate * qty * entry_price if in_trade else 0.0
+        )
+        equity[t] = config.capital_brl + realized + floating
+
+    span_days = (ts.iloc[-1] - ts.iloc[0]).days if len(ts) > 1 else 0
+    years = span_days / 365.25 if span_days > 0 else None
+    return Ifr2Result(config=config, trades=trades, equity=equity, years=years)
