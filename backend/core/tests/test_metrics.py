@@ -96,3 +96,74 @@ def test_metric_invariants(pnls: list[float], capital: float) -> None:
     assert m.n_wins + m.n_losses <= m.n_trades
     assert 0 <= m.best_streak <= m.n_wins
     assert 0 <= m.worst_streak <= m.n_losses
+
+
+# --- equity drawdown, CAGR and Calmar (docs/score.md) -----------------------------------------
+
+
+def test_equity_drawdown_is_the_largest_fall_of_the_equity_curve_over_its_peak() -> None:
+    # capital 1000, daily equity 1100, 900, 1050: peak 1100 -> trough 900 is 200 / 1100.
+    # The closed trades (+100, -50) never show the dip: the balance drawdown is measured on
+    # cumulative PnL over capital, 50 / 1000.
+    m = compute_metrics([100, -50], capital=1_000, equity=[1_100, 900, 1_050], years=2.0)
+
+    assert m.max_equity_drawdown == pytest.approx(200 / 1_100)
+    assert m.max_drawdown == pytest.approx(0.05)
+
+
+def test_equity_drawdown_counts_a_losing_start_from_the_initial_capital() -> None:
+    m = compute_metrics([-100], capital=1_000, equity=[900, 950], years=1.0)
+
+    assert m.max_equity_drawdown == pytest.approx(100 / 1_000)
+
+
+def test_cagr_annualises_the_closed_trade_result() -> None:
+    # net +50 on 1000 over 2 years: 1.05 ** (1 / 2) - 1
+    m = compute_metrics([100, -50], capital=1_000, equity=[1_100, 900, 1_050], years=2.0)
+
+    assert m.cagr == pytest.approx(1.05**0.5 - 1)
+
+
+def test_same_result_over_a_longer_period_has_a_lower_cagr_and_calmar() -> None:
+    short = compute_metrics([100], capital=1_000, equity=[1_000, 950, 1_100], years=1.0)
+    long_ = compute_metrics([100], capital=1_000, equity=[1_000, 950, 1_100], years=2.0)
+
+    assert short.max_equity_drawdown == long_.max_equity_drawdown
+    assert short.calmar is not None and long_.calmar is not None
+    assert long_.calmar < short.calmar
+
+
+def test_calmar_is_cagr_over_equity_drawdown() -> None:
+    m = compute_metrics([100, -50], capital=1_000, equity=[1_100, 900, 1_050], years=2.0)
+
+    assert m.calmar == pytest.approx((1.05**0.5 - 1) / (200 / 1_100))
+
+
+def test_calmar_is_infinite_with_a_gain_and_no_drawdown() -> None:
+    m = compute_metrics([100], capital=1_000, equity=[1_000, 1_100], years=1.0)
+
+    assert m.max_equity_drawdown == 0
+    assert m.calmar == math.inf
+
+
+def test_a_total_loss_has_a_cagr_of_minus_one() -> None:
+    m = compute_metrics([-1_000], capital=1_000, equity=[0.0], years=1.0)
+
+    assert m.cagr == pytest.approx(-1.0)
+
+
+def test_without_an_equity_curve_the_equity_fields_are_missing() -> None:
+    m = compute_metrics([100, -50], capital=1_000)
+
+    assert (m.max_equity_drawdown, m.cagr, m.calmar) == (None, None, None)
+
+
+def test_no_trades_with_an_equity_curve_is_flat() -> None:
+    m = compute_metrics([], capital=1_000, equity=[1_000, 1_000], years=1.0)
+
+    assert (m.max_equity_drawdown, m.cagr) == (0.0, 0.0)
+
+
+def test_years_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="years"):
+        compute_metrics([100], capital=1_000, equity=[1_100], years=0)

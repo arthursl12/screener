@@ -35,6 +35,7 @@ from b3core.optimizer import (
     run_hash,
     split_candles,
 )
+from b3core.score import score_v1
 
 BASE = make_config()
 WORKED = make_candles([C1, C2, C3, C4_ENTRY, C5_TARGET])
@@ -141,6 +142,7 @@ def test_objectives_are_maximised_and_min_drawdown_is_negated() -> None:
     assert objective_value(m, "profit_factor") == pytest.approx(m.profit_factor)
     assert objective_value(m, "ev") == pytest.approx(m.ev)
     assert objective_value(m, "min_drawdown") == pytest.approx(-0.30)
+    assert objective_value(m, "score_v1") == pytest.approx(score_v1(m))
     with pytest.raises(ValueError, match="objective"):
         objective_value(m, "sharpe")
 

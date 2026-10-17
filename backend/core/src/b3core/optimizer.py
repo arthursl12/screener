@@ -21,13 +21,14 @@ import pandas as pd
 from b3core.data import Timeframe
 from b3core.engine import BacktestConfig, run_backtest, window_is_valid
 from b3core.metrics import Metrics, compute_metrics
+from b3core.score import score_v1
 
 ENGINE_VERSION = "0.1.0"
 STRATEGY_ID = "123_compra"
 STRATEGY_VERSION = 1
 COST_MODEL_VERSION = 0  # costs are not implemented yet: all default to zero
 
-OBJECTIVES = ("result", "profit_factor", "ev", "min_drawdown")
+OBJECTIVES = ("result", "profit_factor", "ev", "min_drawdown", "score_v1")
 
 # Brief section 12: ~180 combinations is cheap; ~11,500 is where a genetic search pays off.
 GRID_RECOMMENDED_LIMIT = 5_000
@@ -198,6 +199,8 @@ def objective_value(metrics: Metrics, objective: str) -> float:
         return metrics.ev
     if objective == "min_drawdown":
         return -metrics.max_drawdown
+    if objective == "score_v1":
+        return score_v1(metrics)
     raise ValueError(f"unknown objective {objective!r}, expected one of {OBJECTIVES}")
 
 

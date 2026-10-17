@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 
 
 @dataclass(frozen=True)
@@ -24,7 +25,19 @@ class Metrics:
     profit_factor: float  # inf when there are gains and no losses, 0 with no trades
     best_streak: int  # longest run of consecutive wins
     worst_streak: int  # longest run of consecutive losses
-    max_drawdown: float  # positive fraction
+    max_drawdown: float  # positive fraction of initial capital, on closed trades (balance)
+    # The three fields below need an equity curve and a period (docs/score.md); None without.
+    max_equity_drawdown: float | None = None  # positive fraction of the equity peak
+    cagr: float | None = None  # annualised result of the closed trades; -1.0 on a total loss
+
+    @property
+    def calmar(self) -> float | None:
+        """CAGR over the equity drawdown; inf with a gain and no drawdown."""
+        if self.cagr is None or self.max_equity_drawdown is None:
+            return None
+        if self.max_equity_drawdown == 0:
+            return math.inf if self.cagr > 0 else 0.0
+        return self.cagr / self.max_equity_drawdown
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -38,11 +51,41 @@ def _longest_run(flags: Sequence[bool]) -> int:
     return best
 
 
-def compute_metrics(pnls: Sequence[float], capital: float) -> Metrics:
-    """A win has PnL above zero and a loss below zero; a zero PnL trade is neither."""
+def _equity_drawdown(equity: Sequence[float] | NDArray[np.float64], capital: float) -> float:
+    """Largest fall of the equity curve over its running peak. The curve starts at the capital."""
+    curve = np.concatenate(([capital], np.asarray(equity, dtype=np.float64)))
+    peak = np.maximum.accumulate(curve)
+    return float(((peak - curve) / peak).max())
+
+
+def _cagr(net_pnl: float, capital: float, years: float) -> float:
+    final = capital + net_pnl
+    return (final / capital) ** (1 / years) - 1 if final > 0 else -1.0
+
+
+def compute_metrics(
+    pnls: Sequence[float],
+    capital: float,
+    *,
+    equity: Sequence[float] | NDArray[np.float64] | None = None,
+    years: float | None = None,
+) -> Metrics:
+    """A win has PnL above zero and a loss below zero; a zero PnL trade is neither.
+
+    `equity` is the equity curve in currency, one value per bar (closed PnL plus the open
+    position marked at the close); it adds `max_equity_drawdown`. `years` is the length of
+    the period; it adds `cagr`.
+    """
+    if years is not None and years <= 0:
+        raise ValueError("years must be positive")
+    max_equity_drawdown = None if equity is None else _equity_drawdown(equity, capital)
     n = len(pnls)
     if n == 0:
-        return Metrics(0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0.0)
+        return Metrics(
+            0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0.0,
+            max_equity_drawdown=max_equity_drawdown,
+            cagr=None if years is None else 0.0,
+        )  # fmt: skip
 
     values = np.asarray(pnls, dtype=np.float64)
     gains = values[values > 0]
@@ -77,4 +120,6 @@ def compute_metrics(pnls: Sequence[float], capital: float) -> Metrics:
         best_streak=_longest_run([bool(v > 0) for v in values]),
         worst_streak=_longest_run([bool(v < 0) for v in values]),
         max_drawdown=float(drawdown.max()) / capital,
+        max_equity_drawdown=max_equity_drawdown,
+        cagr=None if years is None else _cagr(net, capital, years),
     )
