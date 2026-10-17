@@ -1,6 +1,6 @@
-# score_v1 (DRAFT, not approved, not implemented)
+# score_v1 (APPROVED by the owner, not implemented yet)
 
-Brief section 6 asks for an original 0 to 100 score, with the formula written here and approved before any code. Every constant below is a proposal for the owner to change.
+Brief section 6 asks for an original 0 to 100 score, with the formula written here and approved before any code. The owner approved the formula and constants below. Any change creates `score_v2`.
 
 ## Why a score at all
 
@@ -46,11 +46,11 @@ B ranks above A, which is the behaviour we want.
 
 ## Open questions for the owner
 
-1. Are the weights (35 / 35 / 30) and the clip ranges (PF 2.5, DD 30%, EV 0.5%) reasonable for IFR2 on B3? They were picked by hand, not fitted.
-2. `n0 = 30` in `conf`: is half credit at 30 trades the right level for a strategy that trades several times a month?
+1. ~~Weights (35 / 35 / 30) and clip ranges (PF 2.5, DD 30%, EV 0.5%).~~ **Approved (owner).** Picked by hand, not fitted; revisit with `score_v2` if results look off.
+2. ~~`n0 = 30` in `conf`.~~ **Approved (owner).**
 3. ~~Should the score also look at out-of-sample?~~ **Decided (owner): no.** `score_v1` describes one period only. The optimizer reports `is_score`, `oos_score` and the `dropped` flag (`flag_drop` in `optimizer.py`) side by side. Reason: a score that depends on the split would change with `oos_fraction`, and ranking on out-of-sample data would leak it into selection. A combined robustness number, if ever wanted, gets its own metric and version tag.
 
-## Tests to write first, once approved
+## Tests to write first (approved, ready to write)
 
 1. The worked example above, exact to one decimal.
 2. Monotonic in each input with the others fixed.
