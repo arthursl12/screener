@@ -54,6 +54,10 @@ Sanity check against the owner's rule of thumb: 0.04% per day for 21 days is 0.8
 4. The three-day factor above, exact to 7 decimals.
 5. The window excludes `d0` itself and includes `d1`: moving `d1` by one business day multiplies the factor by that day's rate.
 
+## Data sources
+
+The function takes any table of daily rates, so the source is a notebook decision. In order: the Central Bank's SGS 12 (the exact CDI); if its API is blocked, the Selic target rate from Ipeadata (series `BM366_TJOVER366`, percent a year) minus 0.10 points, converted to a business-day rate as `(1 + a / 100) ^ (1 / 252) - 1` and restricted to trading days. That second source is an approximation: checked against the CDI of 2019 to 2023 (5.96%, 2.76%, 4.42%, 12.39%, 13.04%, from memory) it came within about 0.1 points a year (5.85, 2.73, 4.33, 12.33, 12.99). Notebooks print which source they used. Added Oct 18, 2026 at the owner's request, because the Central Bank API was unreachable.
+
 ## Where it lives
 
 A pure function in `core` takes a table of dates and daily rates and returns `factor`, `cdi_cagr`, `excess` and `beats_cdi`. Downloading the series from the Central Bank happens in the notebook, never in `core`.
