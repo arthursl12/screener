@@ -60,6 +60,13 @@ def buy_and_hold_equity(candles: Mapping[str, pd.DataFrame], capital: float) -> 
     return combine_equity(curves)
 
 
+def equity_drawdown(equity: pd.Series, capital: float) -> float:
+    """Largest fall over the running peak, as a fraction. The curve starts at `capital`."""
+    curve = np.concatenate(([capital], equity.to_numpy(dtype=np.float64)))
+    peak = np.maximum.accumulate(curve)
+    return float(((peak - curve) / peak).max())
+
+
 def summarize_portfolio(
     equity: pd.Series, capital: float, cdi_rates: pd.Series
 ) -> PortfolioSummary:
@@ -78,9 +85,7 @@ def summarize_portfolio(
 
     final = float(equity.iloc[-1])
     cagr = (final / capital) ** (1 / years) - 1 if final > 0 else -1.0
-    curve = np.concatenate(([capital], equity.to_numpy(dtype=np.float64)))
-    peak = np.maximum.accumulate(curve)
-    drawdown = float(((peak - curve) / peak).max())
+    drawdown = equity_drawdown(equity, capital)
     calmar = (math.inf if cagr > 0 else 0.0) if drawdown == 0 else cagr / drawdown
     cdi = compare_with_cdi(cagr, years, cdi_rates, pd.DatetimeIndex(equity.index))
     return PortfolioSummary(years, cagr, drawdown, calmar, cdi.cdi_cagr, cdi.excess, cdi.beats_cdi)

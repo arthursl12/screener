@@ -4,8 +4,9 @@ from collections.abc import Mapping
 
 import pandas as pd
 
-from b3core.benchmark import compare_with_cdi
+from b3core.benchmark import compare_with_cdi, compare_with_index, index_equity
 from b3core.ifr2 import Ifr2Config, run_ifr2
+from b3core.portfolio import buy_and_hold_equity, equity_drawdown, summarize_portfolio
 from b3core.score import score_v1
 
 
@@ -15,11 +16,14 @@ def scan_universe(
     cdi_rates: pd.Series,
     *,
     min_candles: int = 250,
+    index_closes: pd.Series | None = None,
 ) -> pd.DataFrame:
-    """One row per ticker, in the order given: the metrics, `score_v1` and the CDI comparison.
+    """One row per ticker, in the order given: the metrics, `score_v1` and the benchmarks.
 
-    Each ticker is compared with the CDI over its own window. Tickers with fewer than
-    `min_candles` candles are left out and named in `table.attrs["skipped"]`.
+    Each ticker is compared, over its own window, with the CDI and with buying and holding the
+    ticker (docs/cdi.md, docs/ibov.md). With `index_closes` (the IBOV close by date) it is also
+    compared with holding the index. Tickers with fewer than `min_candles` candles are left out
+    and named in `table.attrs["skipped"]`.
     """
     rows: dict[str, dict[str, float | int | bool]] = {}
     skipped: list[str] = []
@@ -50,6 +54,26 @@ def scan_universe(
                 "excess": cdi.excess,
                 "beats_cdi": cdi.beats_cdi,
             }
+            capital = config.capital_brl
+            held = summarize_portfolio(
+                buy_and_hold_equity({ticker: candles}, capital), capital, cdi_rates
+            )
+            row |= {
+                "bh_cagr": held.cagr,
+                "bh_excess": m.cagr - held.cagr,
+                "beats_bh": m.cagr > held.cagr,
+                "bh_max_equity_drawdown": held.max_equity_drawdown,
+                "bh_calmar": held.calmar,
+            }
+            if index_closes is not None:
+                ibov = compare_with_index(m.cagr, result.years, index_closes, candles["ts"])
+                curve = index_equity(index_closes, candles["ts"], capital)
+                row |= {
+                    "ibov_cagr": ibov.cagr,
+                    "ibov_excess": ibov.excess,
+                    "beats_ibov": ibov.beats,
+                    "ibov_max_equity_drawdown": equity_drawdown(curve, capital),
+                }
         rows[ticker] = row
     table = pd.DataFrame.from_dict(rows, orient="index")
     table.attrs["skipped"] = skipped

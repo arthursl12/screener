@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from b3core.benchmark import compare_with_cdi
+from b3core.benchmark import compare_with_cdi, compare_with_index
 from b3core.ifr2 import Ifr2Config, run_ifr2
 from b3core.score import score_v1
 from b3core.universe import scan_universe
@@ -93,6 +93,69 @@ def test_a_missing_cdi_day_is_an_error() -> None:
 
     with pytest.raises(ValueError, match="2024-01-04"):
         scan(cdi=gap)
+
+
+# --- the benchmarks next to the CDI (docs/ibov.md) --------------------------------------------
+
+INDEX = pd.Series(
+    [100.0, 98.0, 103.0, 101.0, 99.0, 105.0, 110.0], index=pd.bdate_range("2024-01-02", periods=7)
+)
+
+
+def test_every_ticker_is_compared_with_buying_and_holding_it() -> None:
+    table = scan()
+
+    work, up = table.loc["WORK3"], table.loc["UP3"]
+    assert work["bh_cagr"] == pytest.approx(0.0)  # the worked example starts and ends at 10.00
+    assert work["bh_excess"] == pytest.approx(work["cagr"])
+    assert bool(work["beats_bh"]) is True  # +R$ 46.50 against holding flat
+    years = work["years"]
+    assert up["bh_cagr"] == pytest.approx((16.2 / 10.2) ** (1 / years) - 1)
+    assert up["bh_max_equity_drawdown"] == 0.0  # it never fell
+    assert bool(up["beats_bh"]) is False  # no trades against a rising stock
+
+
+def flat_candles(closes: list[float]) -> pd.DataFrame:
+    return candles([(c, c, c, c) for c in closes])
+
+
+def test_a_tie_with_buy_and_hold_is_not_a_win() -> None:
+    row = scan({"FLAT3": flat_candles([10.0] * 7)}).loc["FLAT3"]  # no trades, price unchanged
+
+    assert row["cagr"] == 0 and row["bh_cagr"] == 0
+    assert bool(row["beats_bh"]) is False
+
+
+def test_the_buy_and_hold_calmar_is_its_cagr_over_its_drawdown() -> None:
+    row = scan({"DIP3": flat_candles([10.0, 12.0, 9.0, 13.0, 13.0, 13.0, 13.0])}).loc["DIP3"]
+
+    assert row["bh_max_equity_drawdown"] == pytest.approx(3 / 12)
+    assert row["bh_calmar"] == pytest.approx(row["bh_cagr"] / 0.25)
+    assert row["bh_calmar"] > 0
+
+
+def test_the_buy_and_hold_drawdown_is_the_falling_part_of_the_close() -> None:
+    table = scan()
+
+    # WORK3 closes 10.0, 10.5, 10.2, 9.8, 9.5, 9.9, 10.0 on a capital of 10_000:
+    # the peak is the capital's 10.5/10.0 = 10_500 and the trough 9_500, a fall of 1_000/10_500
+    assert table.loc["WORK3", "bh_max_equity_drawdown"] == pytest.approx(1_000 / 10_500)
+
+
+def test_the_index_columns_appear_only_when_the_index_is_given() -> None:
+    assert not any(c.startswith("ibov") for c in scan().columns)
+
+    row = scan(index_closes=INDEX).loc["WORK3"]
+
+    direct = run_ifr2(DATA["WORK3"], CONFIG)
+    assert direct.metrics.cagr is not None and direct.years is not None
+    expected = compare_with_index(direct.metrics.cagr, direct.years, INDEX, DATA["WORK3"]["ts"])
+    assert row["ibov_cagr"] == pytest.approx(expected.cagr)
+    assert row["ibov_excess"] == pytest.approx(expected.excess)
+    assert expected.beats is False  # the index rose 10% in a week: the strategy made 0.47%
+    assert bool(row["beats_ibov"]) is expected.beats
+    # the index held with the capital: 10_000, 9_800, 10_300, 10_100, 9_900, 10_500, 11_000
+    assert row["ibov_max_equity_drawdown"] == pytest.approx(400 / 10_300)
 
 
 # --- ranking combinations across tickers -------------------------------------------------------
