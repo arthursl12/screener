@@ -94,7 +94,7 @@ STRATEGY_123 = Strategy123()
 
 @dataclass(frozen=True)
 class Ifr2Strategy:
-    """IFR2 de compra (brief section 7), run by `b3core.ifr2`. Specified for daily candles; other timeframes warn."""
+    """IFR2 de compra (brief section 7), run by `b3core.ifr2`. Daily candles; others warn."""
 
     id: str = "ifr2_compra"
     version: int = 1
