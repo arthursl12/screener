@@ -12,8 +12,8 @@ import math
 import multiprocessing
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass, field, fields
-from typing import Any, Protocol
+from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
+from typing import Any, Protocol, cast
 
 import numpy as np
 import pandas as pd
@@ -22,6 +22,7 @@ from b3core.data import Timeframe
 from b3core.metrics import Metrics, compute_metrics
 from b3core.score import score_v1
 from b3core.strategy import STRATEGY_123, Strategy
+from b3core.trialstore import SqliteTrialStore, TrialInfo
 
 ENGINE_VERSION = "0.1.0"
 COST_MODEL_VERSION = 0  # costs are not implemented yet: all default to zero
@@ -88,6 +89,9 @@ class ParamSpace:
     @property
     def names(self) -> list[str]:
         return list(self._axes)
+
+    def to_dict(self) -> dict[str, list[Any]]:
+        return {name: list(axis) for name, axis in self._axes.items()}
 
     @property
     def _raw_size(self) -> int:
@@ -262,22 +266,37 @@ class Trial:
 
 
 class TrialCache:
-    """In-memory map from run_hash to metrics. Repeated individuals and re-runs cost nothing."""
+    """Map from run_hash to metrics. Repeated individuals and re-runs cost nothing.
 
-    def __init__(self) -> None:
+    In memory by default. With a `store` it also reads through to it and writes new results to
+    it, so a later session starts warm.
+    """
+
+    def __init__(self, store: SqliteTrialStore | None = None) -> None:
         self._metrics: dict[str, Metrics] = {}
+        self.store = store
         self.hits = 0
         self.misses = 0
 
     def get(self, key: str) -> Metrics | None:
         found = self._metrics.get(key)
+        if found is None and self.store is not None:
+            found = self.store.get(key)
+            if found is not None:
+                self._metrics[key] = found
         if found is not None:
             self.hits += 1
         return found
 
-    def put(self, key: str, metrics: Metrics) -> None:
+    def put(self, key: str, metrics: Metrics, info: TrialInfo | None = None) -> None:
         self._metrics[key] = metrics
+        if self.store is not None and info is not None:
+            self.store.put(key, metrics, info)
         self.misses += 1
+
+    def flush(self) -> None:
+        if self.store is not None:
+            self.store.flush()
 
 
 Evaluate = Callable[[Sequence[int]], list[Trial]]
@@ -352,8 +371,10 @@ class _Evaluator:
         self._used += len(missing)
 
         for key, metrics in zip(missing, self._run(list(missing.values())), strict=True):
-            self._cache.put(key, metrics)
+            info = TrialInfo(self._strategy.id, missing[key].to_dict(), self._fingerprint)
+            self._cache.put(key, metrics, info)
             found[key] = metrics
+        self._cache.flush()
 
         return [
             Trial(
@@ -455,6 +476,7 @@ class OptimizationResult:
     names: list[str]
     trials: list[Trial]  # in-sample trials, in evaluation order
     validation: list[ValidationRow] = field(default_factory=list)
+    run_id: int | None = None  # set when the cache has a store: the run's id in its history
 
     @property
     def n_trials(self) -> int:
@@ -517,11 +539,15 @@ def optimize(
     cache: TrialCache | None = None,
     timeframe: Timeframe | None = None,
     intraday: pd.DataFrame | None = None,
+    run_label: str = "",
+    created_at: str | None = None,
 ) -> OptimizationResult:
     """Search in-sample, then re-run the best `top_n` feasible results out-of-sample.
 
     With `oos_fraction=0` the search uses all candles and nothing is validated. Day-trade runs
     need the candles' `timeframe`; `intraday` (finer candles) is split at the same cut in time.
+    When `cache` has a store, the run and its trials are also written to its history, labelled
+    with `run_label` and `created_at` (the caller supplies the date: core never reads the clock).
     """
     objective_value(compute_metrics([], 1.0), objective)  # fail fast on an unknown objective
     if not isinstance(base_config, space.strategy.config_type):
@@ -556,8 +582,40 @@ def optimize(
     )
     trials = algorithm.search(space, search)
     result = OptimizationResult(objective=objective, names=space.names, trials=trials)
+
+    def record(final: OptimizationResult) -> OptimizationResult:
+        if cache.store is None:
+            return final
+        run_id = cache.store.start_run(
+            strategy=space.strategy.id,
+            objective=objective,
+            label=run_label,
+            algorithm=type(algorithm).__name__,
+            config={
+                "base": cast(Any, base_config).to_dict(),
+                "space": space.to_dict(),
+                "constraints": asdict(constraints),
+                "algorithm": asdict(algorithm) if is_dataclass(algorithm) else {},
+                "oos_fraction": oos_fraction,
+                "top_n": top_n,
+            },
+            created_at=created_at,
+        )
+        cache.store.record_trials(
+            run_id, "in_sample", [(t.index, t.run_hash, t.objective) for t in final.trials]
+        )
+        cache.store.record_trials(
+            run_id,
+            "out_of_sample",
+            [
+                (v.index, v.out_of_sample.run_hash, v.out_of_sample.objective)
+                for v in final.validation
+            ],
+        )
+        return replace(final, run_id=run_id)
+
     if oos_fraction == 0:
-        return result
+        return record(result)
 
     validate = _Evaluator(
         out_of_sample,
@@ -584,6 +642,6 @@ def optimize(
         )
         for rank, (ins, oos) in enumerate(zip(top, out_trials, strict=True), start=1)
     ]
-    return OptimizationResult(
-        objective=objective, names=space.names, trials=trials, validation=rows
+    return record(
+        OptimizationResult(objective=objective, names=space.names, trials=trials, validation=rows)
     )

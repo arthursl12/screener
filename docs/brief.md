@@ -469,6 +469,7 @@ Nothing merges to `main` unless the quality gates pass, and each phase has an ex
   - [x] ATR details (owner, Oct 17, 2026): Wilder smoothing; `atr_period` (default 5) and `atr_mult` k (default 2) are both parameters the optimizer can search. Zero or not-yet-available ATR: skip the signal (assumption, needs a test; owner did not answer).
   - [x] Lot size 1, raw (split-adjusted, not dividend-adjusted) prices with dividends ignored, costs of 0.03% per side as the IFR2 preset (the engine default stays 0), fixed capital with no reinvestment.
   - [ ] Confirm the B3 fee of 0.03% per side (0.005% trading + 0.025% settlement) against B3's published table; the figure comes from a research note.
+  - [x] Optimization results registry: a SQLite file (standard library) with `results` (cache by `run_hash`), `optimization_runs` and `optimization_trials`, the tables planned for Postgres (owner decision, Oct 18, 2026). Postgres implements the same store later. Registry files are git-ignored. Open: incremental per-ticker caching when new data arrives, and a pruning policy for old data versions.
   - [ ] Report equity drawdown (open trades marked at the close) next to balance drawdown (closed trades only), and rank on equity. Decide whether to use the intraday low for the worst case.
 - [x] IFR2 assumptions in section 7 signed off by the owner (Oct 17, 2026), including exit order target, time stop, RSI exit.
 - [ ] Owner rewrites the IFR2 subsection of section 7 in their own words.

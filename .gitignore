@@ -28,3 +28,11 @@ htmlcov/
 # OS / editor
 .DS_Store
 Thumbs.db
+
+# Optimization registries (SQLite): results can contain vendor-derived data
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+trials*.db
+trials*.db-wal
+trials*.db-shm
