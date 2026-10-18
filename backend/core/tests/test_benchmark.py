@@ -3,7 +3,12 @@
 import pandas as pd
 import pytest
 
-from b3core.benchmark import compare_with_cdi
+from b3core.benchmark import (
+    compare_with_cdi,
+    compare_with_index,
+    compare_with_prices,
+    index_equity,
+)
 
 # 366 calendar days, 252 business days at 0.04% (the worked example in docs/cdi.md)
 YEARS = 366 / 365.25
@@ -120,3 +125,102 @@ def test_a_late_evening_local_time_keeps_its_local_date() -> None:
     result = compare_with_cdi(0.0, 1.0, constant(local, 1.0), evening)
 
     assert result.factor == pytest.approx(1.01**3)
+
+
+# --- IBOV (docs/ibov.md) ---------------------------------------------------------------------
+
+YEARS_366 = 366 / 365.25
+
+
+def local_days(n: int, start: str = "2024-01-02") -> pd.DatetimeIndex:
+    # midnight in São Paulo is 03:00 UTC
+    return pd.bdate_range(start, periods=n).tz_localize("UTC") + pd.Timedelta(hours=3)
+
+
+def closes(values: list[float], start: str = "2024-01-02") -> pd.Series:
+    return pd.Series(values, index=pd.bdate_range(start, periods=len(values)))
+
+
+def test_prices_worked_example_beats_and_loses() -> None:
+    won = compare_with_prices(0.12, YEARS_366, 100_000, 110_000)
+    lost = compare_with_prices(0.09, YEARS_366, 100_000, 110_000)
+
+    assert won.factor == pytest.approx(1.10)
+    assert won.cagr == pytest.approx(0.099785, abs=1e-6)
+    assert won.excess == pytest.approx(0.12 - 0.099785, abs=1e-6)
+    assert won.beats is True
+    assert lost.excess == pytest.approx(-0.009785, abs=1e-6)
+    assert lost.beats is False
+
+
+def test_a_falling_index_has_a_negative_cagr_and_a_flat_strategy_beats_it() -> None:
+    fell = compare_with_prices(0.0, YEARS_366, 100_000, 90_000)
+
+    assert fell.cagr == pytest.approx(-0.099806, abs=1e-6)
+    assert fell.beats is True
+
+
+def test_equal_prices_are_not_a_win_for_a_flat_strategy() -> None:
+    assert compare_with_prices(0.0, 1.0, 100.0, 100.0).beats is False  # excess is exactly 0
+
+
+def test_the_short_window_factor() -> None:
+    assert compare_with_prices(0.0, 3 / 365.25, 100_000, 100_150).factor == pytest.approx(1.0015)
+
+
+def test_prices_reject_bad_input() -> None:
+    with pytest.raises(ValueError, match="years"):
+        compare_with_prices(0.0, 0.0, 100.0, 110.0)
+    with pytest.raises(ValueError, match="positive"):
+        compare_with_prices(0.0, 1.0, 0.0, 110.0)
+    with pytest.raises(ValueError, match="positive"):
+        compare_with_prices(0.0, 1.0, 100.0, -5.0)
+
+
+def test_index_uses_the_candle_window_not_the_index_dates() -> None:
+    index = closes([90.0, 100.0, 105.0, 110.0, 200.0])  # Jan 2 to Jan 8
+    window = local_days(3, "2024-01-03")  # candles on Jan 3, 4, 5: closes 100 -> 110
+
+    result = compare_with_index(0.0, 2 / 365.25, index, window)
+
+    assert result.factor == pytest.approx(1.10)
+
+
+def test_index_missing_the_first_or_last_close_names_the_date() -> None:
+    index = closes([100.0, 110.0, 120.0], "2024-01-03")  # Jan 3 to Jan 5
+    with pytest.raises(ValueError, match="2024-01-02"):
+        compare_with_index(0.0, 1.0, index, local_days(3, "2024-01-02"))
+    with pytest.raises(ValueError, match="2024-01-08"):
+        compare_with_index(0.0, 1.0, index, local_days(4, "2024-01-03"))
+
+
+def test_index_with_a_non_positive_close_raises() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        compare_with_index(0.0, 1.0, closes([0.0, 1.0, 2.0]), local_days(3))
+
+
+def test_index_with_a_zero_close_inside_the_window_raises() -> None:
+    index = closes([100.0, 0.0, 110.0])
+
+    with pytest.raises(ValueError, match="positive"):
+        compare_with_index(0.0, 1.0, index, local_days(3))
+    with pytest.raises(ValueError, match="positive"):
+        index_equity(index, local_days(3), 1_000.0)
+
+
+def test_index_reads_candle_dates_in_sao_paulo() -> None:
+    # 23:30 on Jan 2 in São Paulo is 02:30 UTC on Jan 3: still the local day of Jan 2
+    late = pd.DatetimeIndex(["2024-01-03 02:30", "2024-01-04 02:30"], tz="UTC")
+    index = closes([100.0, 110.0], "2024-01-02")  # Jan 2, Jan 3
+
+    assert compare_with_index(0.0, 1.0, index, late).factor == pytest.approx(1.10)
+
+
+def test_index_equity_is_the_capital_times_the_close_over_the_first_close() -> None:
+    index = closes([90.0, 100.0, 105.0, 110.0, 200.0])
+    window = local_days(3, "2024-01-03")
+
+    curve = index_equity(index, window, 1_000.0)
+
+    assert curve.tolist() == pytest.approx([1_000.0, 1_050.0, 1_100.0])
+    assert list(curve.index) == list(pd.bdate_range("2024-01-03", periods=3))

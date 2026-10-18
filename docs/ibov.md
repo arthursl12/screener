@@ -1,4 +1,4 @@
-# IBOV and buy-and-hold benchmarks (DRAFT: waiting for the owner's approval)
+# IBOV and buy-and-hold benchmarks (APPROVED by the owner on Oct 18, 2026)
 
 The owner's request (Oct 18, 2026): add a "beats IBOV" comparison next to the CDI one, and a comparison with buying and holding the same ticker. The CDI says whether the strategy was worth more than a risk-free investment; the IBOV says whether it was worth more than simply owning the market; buy and hold says whether trading the ticker was worth more than just owning it. This spec follows `docs/cdi.md`. Once approved, any change creates `buy_and_hold_benchmark_v2`.
 
@@ -69,7 +69,11 @@ An index at 100,000 points on `d0` and 110,000 on `d1`, a window of 366 calendar
 
 A pure function in `core` (`b3core/benchmark.py`, next to `compare_with_cdi`) takes the closes, the candle dates and the CAGR, and returns `factor`, `ibov_cagr`, `excess` and `beats_ibov`. `scan_universe` and the portfolio summary gain the IBOV columns. Downloading `^BVSP` happens in the notebook.
 
-## Open questions for the owner
+## Decisions (owner, Oct 18, 2026)
+
+The owner accepted every proposal above and the answers to the five questions below. Decision 6 gains one addition: the notebooks also show an **adjusted-close** buy and hold beside the raw one, labelled as such, so the size of the dividend effect is visible. The strategy itself stays on raw closes.
+
+## Questions that were open
 
 1. Is the Yahoo `^BVSP` close in points an acceptable index series (decision 3)?
 2. Is an error on a missing close right (decision 4), or should the nearest earlier close be used?

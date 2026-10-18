@@ -8,7 +8,12 @@ import pytest
 
 from b3core.benchmark import compare_with_cdi
 from b3core.ifr2 import Ifr2Config, run_ifr2
-from b3core.portfolio import combine_equity, slot_equity, summarize_portfolio
+from b3core.portfolio import (
+    buy_and_hold_equity,
+    combine_equity,
+    slot_equity,
+    summarize_portfolio,
+)
 
 CONFIG = Ifr2Config(atr_period=2, max_risk_brl=100, capital_brl=10_000, lot_size=1)
 WORKED = [
@@ -105,3 +110,43 @@ def test_the_curve_needs_a_span() -> None:
     same_day = pd.Series([100.0, 101.0], index=pd.DatetimeIndex([days(1)[0]] * 2))
     with pytest.raises(ValueError, match="more than one day"):
         summarize_portfolio(same_day, 100.0, CDI)
+
+
+# --- buy and hold (docs/ibov.md) -------------------------------------------------------------
+
+
+def prices(closes_: list[float], start: str = "2024-01-02") -> pd.DataFrame:
+    return candles([(c, c, c, c) for c in closes_]).assign(ts=days(len(closes_), start))
+
+
+def test_buy_and_hold_of_one_ticker_is_the_capital_times_the_close_ratio() -> None:
+    curve = buy_and_hold_equity({"A": prices([20.0, 22.0, 18.0, 22.0])}, 1_000.0)
+
+    assert curve.tolist() == pytest.approx([1_000.0, 1_100.0, 900.0, 1_100.0])
+    s = summarize_portfolio(curve, 1_000.0, CDI)
+    assert s.cagr == pytest.approx(1.1 ** (1 / s.years) - 1)
+    assert s.max_equity_drawdown == pytest.approx(200 / 1_100)
+
+
+def test_equal_weight_buy_and_hold_is_the_mean_of_the_ratios() -> None:
+    up = prices([10.0, 12.0])
+    down = prices([10.0, 8.0])
+
+    curve = buy_and_hold_equity({"UP": up, "DOWN": down}, 100_000.0)
+
+    assert curve.tolist() == pytest.approx([100_000.0, 100_000.0])  # 50k*1.2 + 50k*0.8
+
+
+def test_a_ticker_that_starts_later_holds_its_first_value_before_it_starts() -> None:
+    early = prices([10.0, 10.0, 20.0])  # Jan 2 to 4
+    late = prices([5.0, 10.0], "2024-01-03")  # Jan 3 to 4: doubles
+
+    curve = buy_and_hold_equity({"E": early, "L": late}, 100.0)
+
+    # the late slot holds its 50 until Jan 3 and doubles on Jan 4; the early one doubles on Jan 4
+    assert curve.tolist() == pytest.approx([100.0, 100.0, 200.0])
+
+
+def test_buy_and_hold_needs_a_ticker() -> None:
+    with pytest.raises(ValueError, match="at least one"):
+        buy_and_hold_equity({}, 100.0)

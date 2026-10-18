@@ -59,3 +59,71 @@ def compare_with_cdi(
     cdi_cagr = factor ** (1.0 / years) - 1.0
     excess = cagr - cdi_cagr
     return CdiComparison(factor=factor, cdi_cagr=cdi_cagr, excess=excess, beats_cdi=excess > 0)
+
+
+@dataclass(frozen=True)
+class PriceComparison:
+    """The strategy against a buy-and-hold position (docs/ibov.md)."""
+
+    factor: float  # what 1 real became between the first and the last close
+    cagr: float  # the buy-and-hold CAGR
+    excess: float  # strategy CAGR minus buy-and-hold CAGR, as a fraction
+    beats: bool
+
+
+def compare_with_prices(
+    cagr: float, years: float, first_close: float, last_close: float
+) -> PriceComparison:
+    """Compare `cagr` with holding from `first_close` to `last_close` over `years`."""
+    if years <= 0:
+        raise ValueError("years must be positive")
+    if first_close <= 0 or last_close <= 0:
+        raise ValueError("closes must be positive")
+    factor = last_close / first_close
+    held = factor ** (1.0 / years) - 1.0
+    excess = cagr - held
+    return PriceComparison(factor=factor, cagr=held, excess=excess, beats=excess > 0)
+
+
+def _window_closes(
+    closes: pd.Series,
+    trading_days: "pd.DatetimeIndex | pd.Series | Sequence[pd.Timestamp]",
+) -> pd.Series:
+    """The index closes from the first to the last trading day, both of which must exist."""
+    days = _local_dates(trading_days)
+    start, end = days.min(), days.max()
+    series = pd.Series(
+        closes.to_numpy(dtype=np.float64), index=pd.DatetimeIndex(closes.index).normalize()
+    ).sort_index()
+    for day in (start, end):
+        if day not in series.index:
+            raise ValueError(f"no index close for {day.strftime('%Y-%m-%d')}")
+    window = series[(series.index >= start) & (series.index <= end)]
+    if (window <= 0).any():
+        raise ValueError("index closes must be positive")
+    return window
+
+
+def compare_with_index(
+    cagr: float,
+    years: float,
+    closes: pd.Series,
+    trading_days: "pd.DatetimeIndex | pd.Series | Sequence[pd.Timestamp]",
+) -> PriceComparison:
+    """Compare `cagr` with holding the index from the first to the last trading day.
+
+    `closes` holds the index close, indexed by date. The window is the first and last date of
+    `trading_days` (read in São Paulo), and the index needs a close on both.
+    """
+    window = _window_closes(closes, trading_days)
+    return compare_with_prices(cagr, years, float(window.iloc[0]), float(window.iloc[-1]))
+
+
+def index_equity(
+    closes: pd.Series,
+    trading_days: "pd.DatetimeIndex | pd.Series | Sequence[pd.Timestamp]",
+    capital: float,
+) -> pd.Series:
+    """The index held with `capital` over the window: capital times the close over the first one."""
+    window = _window_closes(closes, trading_days)
+    return capital * window / window.iloc[0]

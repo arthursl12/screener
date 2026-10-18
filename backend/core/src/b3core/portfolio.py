@@ -44,6 +44,22 @@ def combine_equity(curves: Mapping[str, pd.Series]) -> pd.Series:
     return table.sum(axis=1)
 
 
+def buy_and_hold_equity(candles: Mapping[str, pd.DataFrame], capital: float) -> pd.Series:
+    """Equal-weight buy and hold of the same tickers (docs/ibov.md), on the raw close.
+
+    Each ticker gets `capital / N`, buys at its first close and holds to its last, without
+    rebalancing. The curves are combined with the same edge rule as the strategy slots.
+    """
+    if not candles:
+        raise ValueError("buy and hold needs at least one ticker")
+    share = capital / len(candles)
+    curves = {}
+    for ticker, frame in candles.items():
+        close = frame["close"].to_numpy(dtype=np.float64)
+        curves[ticker] = pd.Series(share * close / close[0], index=pd.DatetimeIndex(frame["ts"]))
+    return combine_equity(curves)
+
+
 def summarize_portfolio(
     equity: pd.Series, capital: float, cdi_rates: pd.Series
 ) -> PortfolioSummary:
