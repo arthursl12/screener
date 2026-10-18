@@ -475,6 +475,7 @@ Nothing merges to `main` unless the quality gates pass, and each phase has an ex
   - [ ] Report equity drawdown (open trades marked at the close) next to balance drawdown (closed trades only), and rank on equity. Decide whether to use the intraday low for the worst case.
 - [x] IFR2 assumptions in section 7 signed off by the owner (Oct 17, 2026), including exit order target, time stop, RSI exit.
 - [ ] Owner rewrites the IFR2 subsection of section 7 in their own words.
+- [ ] IFR2 sizing after losses (found Oct 18, 2026): the quantity uses the fixed initial `capital_brl`, not the current equity, so a run that loses most of its capital keeps trading the same size and the equity curve can go below zero (VALE3, whole history, capital 10,000, risk 2,000: equity drawdown 111%). The spec does not say what happens at ruin: stop trading, size on current equity, or leave as is. The current behaviour is the fixed-capital reading; no rule has been guessed. Owner to decide.
 - [ ] Pick the repo license and the hosting target for the demo.
 
 ## 11. Learning mode
