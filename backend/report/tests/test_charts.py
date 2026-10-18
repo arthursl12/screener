@@ -18,11 +18,13 @@ from helpers import (  # noqa: E402
 )
 
 from b3core.engine import run_backtest  # noqa: E402
+from b3core.ifr2 import Ifr2Config, run_ifr2  # noqa: E402
 from b3core.optimizer import ParamRange, ParamSpace, optimize  # noqa: E402
 from b3report.charts import (  # noqa: E402
     DISCLAIMER,
     equity_curve_figure,
     heatmap_figure,
+    ifr2_equity_figure,
     monthly_returns,
     monthly_returns_figure,
     trade_chart,
@@ -101,3 +103,45 @@ def test_heatmap_pivots_two_parameters_and_averages_the_rest() -> None:
 def test_heatmap_rejects_unknown_columns() -> None:
     with pytest.raises(ValueError, match="nope"):
         heatmap_figure(pd.DataFrame({"a": [1], "objective": [1.0]}), x="a", y="nope")
+
+
+# --- IFR2 ------------------------------------------------------------------------------------
+
+IFR2_ROWS = [
+    (10.00, 10.10, 9.90, 10.00),
+    (10.00, 10.60, 10.00, 10.50),
+    (10.50, 10.60, 10.10, 10.20),
+    (10.20, 10.30, 9.70, 9.80),
+    (9.80, 9.90, 9.40, 9.50),  # signal: buy 93 at the close, 9.50
+    (9.60, 10.00, 9.00, 9.00),  # equity 10,000 + 93 * (9.00 - 9.50) = 9,953.50
+    (9.00, 9.20, 8.90, 9.10),  # equity 10,000 + 93 * (9.10 - 9.50) = 9,962.80
+]
+IFR2_CONFIG = Ifr2Config(atr_period=2, max_risk_brl=100, capital_brl=10_000, lot_size=1)
+IFR2_CANDLES = make_candles(IFR2_ROWS)
+IFR2_RESULT = run_ifr2(IFR2_CANDLES, IFR2_CONFIG)  # still open at the end: no closed trade
+
+
+def test_ifr2_equity_figure_plots_the_daily_equity_and_its_drawdown() -> None:
+    fig = ifr2_equity_figure(IFR2_RESULT, IFR2_CANDLES)
+
+    equity, drawdown = fig.data
+    # plotly keeps the instants but drops the time zone
+    assert list(pd.DatetimeIndex(equity.x).tz_localize("UTC")) == list(IFR2_CANDLES["ts"])
+    assert list(equity.y) == pytest.approx([10_000] * 5 + [9_953.5, 9_962.8])
+    # (equity - peak) / peak, with the peak starting at the initial capital
+    assert list(drawdown.y) == pytest.approx([0, 0, 0, 0, 0, -0.00465, -0.00372])
+
+
+def test_ifr2_equity_figure_rejects_candles_of_another_length() -> None:
+    with pytest.raises(ValueError, match="candles"):
+        ifr2_equity_figure(IFR2_RESULT, IFR2_CANDLES.iloc[:3])
+
+
+def test_monthly_returns_accepts_an_ifr2_result() -> None:
+    rows = [*IFR2_ROWS[:5], (9.60, 10.00, 9.50, 9.90), (9.90, 10.10, 9.80, 10.00)]
+    result = run_ifr2(make_candles(rows), IFR2_CONFIG)  # the worked example: +R$ 46.50
+
+    table = monthly_returns(result)
+
+    assert table["pnl"].tolist() == pytest.approx([46.50])
+    assert table["return"].tolist() == pytest.approx([46.50 / 10_000])

@@ -4,8 +4,10 @@ import math
 
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from b3core.engine import BacktestResult, Trade
+from b3core.ifr2 import Ifr2Result
 
 DISCLAIMER = (
     "This project is educational and is not investment advice. Backtest and optimizer results "
@@ -30,7 +32,34 @@ def equity_curve_figure(result: BacktestResult) -> go.Figure:
     return fig
 
 
-def monthly_returns(result: BacktestResult) -> pd.DataFrame:
+def ifr2_equity_figure(result: Ifr2Result, candles: pd.DataFrame) -> go.Figure:
+    """Daily equity (open trade marked at the close) and its fall from the running peak."""
+    if len(candles) != len(result.equity):
+        raise ValueError("candles must be the candles the result was computed on")
+    equity = pd.Series(result.equity)
+    peak = equity.cummax()  # the curve sits at the capital until the first entry
+    drawdown = (equity - peak) / peak
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3])
+    fig.add_trace(go.Scatter(x=candles["ts"], y=equity, mode="lines", name="equity"), row=1, col=1)
+    fig.add_trace(
+        go.Scatter(
+            x=candles["ts"],
+            y=drawdown,
+            mode="lines",
+            fill="tozeroy",
+            line={"color": _LOSS},
+            name="drawdown",
+        ),
+        row=2,
+        col=1,
+    )
+    fig.update_yaxes(title_text="R$", row=1, col=1)
+    fig.update_yaxes(title_text="from peak", tickformat=".0%", row=2, col=1)
+    fig.update_layout(title="IFR2 equity curve and drawdown", template=_TEMPLATE)
+    return fig
+
+
+def monthly_returns(result: BacktestResult | Ifr2Result) -> pd.DataFrame:
     """PnL per exit month (São Paulo time) and its return over the initial capital."""
     columns = ["year", "month", "pnl", "return"]
     if not result.trades:
@@ -45,7 +74,7 @@ def monthly_returns(result: BacktestResult) -> pd.DataFrame:
     return table[columns]
 
 
-def monthly_returns_figure(result: BacktestResult) -> go.Figure:
+def monthly_returns_figure(result: BacktestResult | Ifr2Result) -> go.Figure:
     table = monthly_returns(result)
     labels = [f"{y}-{m:02d}" for y, m in zip(table["year"], table["month"], strict=True)]
     fig = go.Figure(
