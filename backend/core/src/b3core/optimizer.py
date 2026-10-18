@@ -19,13 +19,11 @@ import numpy as np
 import pandas as pd
 
 from b3core.data import Timeframe
-from b3core.engine import BacktestConfig, run_backtest, window_is_valid
 from b3core.metrics import Metrics, compute_metrics
 from b3core.score import score_v1
+from b3core.strategy import STRATEGY_123, Strategy
 
 ENGINE_VERSION = "0.1.0"
-STRATEGY_ID = "123_compra"
-STRATEGY_VERSION = 1
 COST_MODEL_VERSION = 0  # costs are not implemented yet: all default to zero
 
 OBJECTIVES = ("result", "profit_factor", "ev", "min_drawdown", "score_v1")
@@ -65,21 +63,17 @@ class ParamRange:
 
 ParamSpec = ParamRange | Sequence[Any] | int | float | str | bool | None
 
-# The entry window is a relation between three parameters, so invalid combinations are dropped
-# before evaluation (brief section 12, rule 1) and not rejected one value at a time.
-_WINDOW_PARAMS = ("min_entry_time", "max_entry_time", "exit_time")
-
-_CONFIG_FIELDS = {f.name: f for f in fields(BacktestConfig)}
-
 
 class ParamSpace:
     """Named axes: a fixed value, a ParamRange, or a list of options. Combinations are indexed."""
 
-    def __init__(self, params: Mapping[str, ParamSpec]) -> None:
+    def __init__(self, params: Mapping[str, ParamSpec], strategy: Strategy = STRATEGY_123) -> None:
+        self.strategy = strategy
+        self._fields = {f.name: f for f in fields(strategy.config_type)}
         self._axes: dict[str, list[Any]] = {}
         self._valid: list[int] | None = None  # raw indices that survive `restricted`
         for name, spec in params.items():
-            if name not in _CONFIG_FIELDS:
+            if name not in self._fields:
                 raise ValueError(f"unknown parameter {name!r}")
             if isinstance(spec, ParamRange):
                 axis: list[Any] = list(spec.values())
@@ -117,54 +111,54 @@ class ParamSpace:
             params[name] = axis[position]
         return dict(reversed(params.items()))
 
-    def build_config(self, base: BacktestConfig, params: Mapping[str, Any]) -> BacktestConfig:
+    def build_config(self, base: Any, params: Mapping[str, Any]) -> Any:
         merged = base.to_dict()
         for name, value in params.items():
-            merged[name] = _cast(name, value)
-        return BacktestConfig(**merged)
+            merged[name] = self._cast(name, value)
+        return self.strategy.config_type(**merged)
 
-    def restricted(self, base: BacktestConfig) -> "ParamSpace":
-        """A copy without the combinations whose entry window is invalid (min < max <= exit)."""
-        if not any(name in self._axes for name in _WINDOW_PARAMS):
+    def _cast(self, name: str, value: Any) -> Any:
+        kind = self._fields[name].type
+        if kind is int:
+            if isinstance(value, bool) or not float(value).is_integer():
+                raise ValueError(f"{name} must be an integer, got {value!r}")
+            return int(value)
+        if kind is float:
+            return float(value)
+        return value
+
+    def restricted(self, base: Any) -> "ParamSpace":
+        """A copy without the combinations the strategy rejects (its `combination_is_valid`).
+
+        Such combinations are relations between parameters, so they are dropped before
+        evaluation (brief section 12, rule 1) and not rejected one value at a time.
+        """
+        constrained = [n for n in self.strategy.constrained_params if n in self._axes]
+        if not constrained:
             return self
-        defaults = {name: getattr(base, name) for name in _WINDOW_PARAMS}
-        valid = []
-        for raw in range(self._raw_size):
-            params = {
-                **defaults,
-                **{k: v for k, v in self._decode_raw(raw).items() if k in defaults},
-            }
-            if window_is_valid(
-                params["min_entry_time"], params["max_entry_time"], params["exit_time"]
-            ):
-                valid.append(raw)
+        valid = [
+            raw
+            for raw in range(self._raw_size)
+            if self.strategy.combination_is_valid(
+                base, {k: v for k, v in self._decode_raw(raw).items() if k in constrained}
+            )
+        ]
         if not valid:
-            raise ValueError("no combination has a valid entry window")
-        copy = ParamSpace({name: list(axis) for name, axis in self._axes.items()})
+            raise ValueError(f"no combination has a valid {self.strategy.restriction}")
+        copy = ParamSpace({name: list(axis) for name, axis in self._axes.items()}, self.strategy)
         copy._valid = valid
         return copy
 
-    def validate(self, base: BacktestConfig) -> None:
+    def validate(self, base: Any) -> None:
         """Build a config for every axis value, so bad ranges fail before any backtest runs.
 
-        The window parameters are checked together by `restricted`, not one value at a time.
+        The constrained parameters are checked together by `restricted`, not one at a time.
         """
         for name, axis in self._axes.items():
-            if name in _WINDOW_PARAMS:
+            if name in self.strategy.constrained_params:
                 continue
             for value in axis:
                 self.build_config(base, {name: value})
-
-
-def _cast(name: str, value: Any) -> Any:
-    kind = _CONFIG_FIELDS[name].type
-    if kind is int:
-        if isinstance(value, bool) or not float(value).is_integer():
-            raise ValueError(f"{name} must be an integer, got {value!r}")
-        return int(value)
-    if kind is float:
-        return float(value)
-    return value
 
 
 @dataclass(frozen=True)
@@ -173,7 +167,7 @@ class SpaceInfo:
     recommendation: str  # "grid" or "genetic"
 
 
-def describe_space(space: ParamSpace, base: BacktestConfig | None = None) -> SpaceInfo:
+def describe_space(space: ParamSpace, base: Any = None) -> SpaceInfo:
     """Report the search-space size before running, and which algorithm suits it.
 
     Pass `base` to count only the combinations with a valid entry window.
@@ -237,11 +231,11 @@ def data_fingerprint(
     return digest.hexdigest()
 
 
-def run_hash(config: BacktestConfig, data_version: str) -> str:
+def run_hash(config: Any, data_version: str, strategy: Strategy = STRATEGY_123) -> str:
     """SHA-256 over everything that determines a result (brief section 9)."""
     payload = {
-        "strategy": STRATEGY_ID,
-        "strategy_version": STRATEGY_VERSION,
+        "strategy": strategy.id,
+        "strategy_version": strategy.version,
         "params": config.to_dict(),
         "data_version": data_version,
         "cost_model_version": COST_MODEL_VERSION,
@@ -288,27 +282,30 @@ class TrialCache:
 
 Evaluate = Callable[[Sequence[int]], list[Trial]]
 
-_pool_data: tuple[pd.DataFrame, Timeframe | None, pd.DataFrame | None] | None = None
+_pool_data: tuple[Strategy, pd.DataFrame, Timeframe | None, pd.DataFrame | None] | None = None
 
 
 def _init_pool(
-    candles: pd.DataFrame, timeframe: Timeframe | None, intraday: pd.DataFrame | None
+    strategy: Strategy,
+    candles: pd.DataFrame,
+    timeframe: Timeframe | None,
+    intraday: pd.DataFrame | None,
 ) -> None:
     global _pool_data
-    _pool_data = (candles, timeframe, intraday)
+    _pool_data = (strategy, candles, timeframe, intraday)
 
 
-def _pool_task(config: BacktestConfig) -> Metrics:
+def _pool_task(config: Any) -> Metrics:
     assert _pool_data is not None
-    candles, timeframe, intraday = _pool_data
-    return run_backtest(candles, config, timeframe=timeframe, intraday=intraday).metrics
+    strategy, candles, timeframe, intraday = _pool_data
+    return strategy.run(candles, config, timeframe=timeframe, intraday=intraday)
 
 
 class _Evaluator:
     def __init__(
         self,
         candles: pd.DataFrame,
-        base: BacktestConfig,
+        base: Any,
         space: ParamSpace,
         objective: str,
         constraints: Constraints,
@@ -318,6 +315,7 @@ class _Evaluator:
         timeframe: Timeframe | None = None,
         intraday: pd.DataFrame | None = None,
     ) -> None:
+        self._strategy = space.strategy
         self._candles = candles
         self._timeframe = timeframe
         self._intraday = intraday
@@ -334,10 +332,10 @@ class _Evaluator:
     def __call__(self, indices: Sequence[int]) -> list[Trial]:
         params = [self._space.decode(i) for i in indices]
         configs = [self._space.build_config(self._base, p) for p in params]
-        hashes = [run_hash(c, self._fingerprint) for c in configs]
+        hashes = [run_hash(c, self._fingerprint, self._strategy) for c in configs]
 
         found: dict[str, Metrics] = {}
-        missing: dict[str, BacktestConfig] = {}
+        missing: dict[str, Any] = {}
         for key, config in zip(hashes, configs, strict=True):
             if key in found or key in missing:
                 continue
@@ -369,19 +367,19 @@ class _Evaluator:
             for index, p, key in zip(indices, params, hashes, strict=True)
         ]
 
-    def _run(self, configs: list[BacktestConfig]) -> list[Metrics]:
+    def _run(self, configs: list[Any]) -> list[Metrics]:
         if self._workers <= 1 or len(configs) < 2:
             return [
-                run_backtest(
+                self._strategy.run(
                     self._candles, c, timeframe=self._timeframe, intraday=self._intraday
-                ).metrics
+                )
                 for c in configs
             ]
         with ProcessPoolExecutor(
             max_workers=self._workers,
             mp_context=multiprocessing.get_context("spawn"),
             initializer=_init_pool,
-            initargs=(self._candles, self._timeframe, self._intraday),
+            initargs=(self._strategy, self._candles, self._timeframe, self._intraday),
         ) as pool:
             return list(pool.map(_pool_task, configs))
 
@@ -506,7 +504,7 @@ class OptimizationResult:
 
 def optimize(
     candles: pd.DataFrame,
-    base_config: BacktestConfig,
+    base_config: Any,
     space: ParamSpace,
     *,
     objective: str = "result",
@@ -526,6 +524,11 @@ def optimize(
     need the candles' `timeframe`; `intraday` (finer candles) is split at the same cut in time.
     """
     objective_value(compute_metrics([], 1.0), objective)  # fail fast on an unknown objective
+    if not isinstance(base_config, space.strategy.config_type):
+        raise TypeError(
+            f"base_config is a {type(base_config).__name__}, "
+            f"but the space belongs to strategy {space.strategy.id!r}"
+        )
     space = space.restricted(base_config)
     space.validate(base_config)
 

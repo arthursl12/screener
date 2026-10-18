@@ -1,4 +1,6 @@
 import math
+from dataclasses import asdict, dataclass
+from typing import Any
 
 import pytest
 from helpers import (
@@ -36,6 +38,7 @@ from b3core.optimizer import (
     split_candles,
 )
 from b3core.score import score_v1
+from b3core.strategy import STRATEGY_123
 
 BASE = make_config()
 WORKED = make_candles([C1, C2, C3, C4_ENTRY, C5_TARGET])
@@ -448,3 +451,75 @@ def test_finer_candles_are_split_with_the_out_of_sample_cut() -> None:
             intraday=intraday[intraday["ts"] >= cut].reset_index(drop=True),
         )
         assert row.out_of_sample.metrics == direct.metrics
+
+
+# --- strategies ------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ToyConfig:
+    gain: float = 1.0
+    losses: int = 0
+
+    def __post_init__(self) -> None:
+        if self.losses > 3:
+            raise ValueError("losses must be at most 3")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ToyStrategy:
+    """A strategy that never touches the engine: one winning trade of `gain`, then `losses`."""
+
+    id: str = "toy"
+    version: int = 1
+    config_type: type = ToyConfig
+    constrained_params: tuple[str, ...] = ("gain", "losses")
+    restriction: str = "gain and losses"
+
+    def run(self, candles: Any, config: ToyConfig, *, timeframe: Any, intraday: Any) -> Any:
+        return compute_metrics([config.gain] + [-1.0] * config.losses, capital=100.0)
+
+    def combination_is_valid(self, base: ToyConfig, params: Any) -> bool:
+        return params.get("losses", base.losses) <= 2  # a made-up relation, to test the hook
+
+
+TOY_SPACE = ParamSpace({"gain": ParamRange(1, 3, 1), "losses": ParamRange(0, 4, 1)}, ToyStrategy())
+
+
+def test_run_hash_depends_on_the_strategy() -> None:
+    fp = data_fingerprint(WORKED)
+    toy = ToyStrategy()
+
+    assert run_hash(BASE, fp) == run_hash(BASE, fp, STRATEGY_123)
+    assert run_hash(ToyConfig(), fp, toy) != run_hash(ToyConfig(), fp, ToyStrategy(id="other"))
+    assert run_hash(ToyConfig(), fp, toy) != run_hash(ToyConfig(), fp, ToyStrategy(version=2))
+
+
+def test_the_optimizer_runs_any_strategy_and_drops_what_its_hook_rejects() -> None:
+    result = optimize(WORKED, ToyConfig(), TOY_SPACE, objective="result", oos_fraction=0.0)
+
+    assert TOY_SPACE.restricted(ToyConfig()).size == 9  # losses 3 and 4 dropped: 3 gains x 3
+    assert result.n_trials == 9
+    assert result.best.params == {"gain": 3, "losses": 0}
+    assert len({t.run_hash for t in result.trials}) == 9
+
+
+def test_a_config_from_another_strategy_is_rejected() -> None:
+    with pytest.raises(TypeError, match="toy"):
+        optimize(WORKED, BASE, TOY_SPACE, oos_fraction=0.0)
+
+
+def test_a_space_where_the_hook_rejects_everything_names_the_restriction() -> None:
+    space = ParamSpace({"losses": [3, 4]}, ToyStrategy())
+
+    with pytest.raises(ValueError, match="gain and losses"):
+        space.restricted(ToyConfig())
+
+
+def test_validation_leaves_constrained_parameters_to_the_hook() -> None:
+    # losses=4 alone is a bad config, but the hook drops it with the others, so validate must
+    # not reject it one value at a time
+    optimize(WORKED, ToyConfig(), TOY_SPACE, oos_fraction=0.0)
