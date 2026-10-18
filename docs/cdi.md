@@ -1,6 +1,6 @@
-# CDI benchmark (DRAFT, waiting for the owner's approval, not implemented)
+# CDI benchmark (APPROVED by the owner on Oct 18, 2026)
 
-The owner's rule (Oct 18, 2026): a strategy that does not beat the CDI over the same period failed, because the money could have stayed in a risk-free investment. Brief section 10 lists the definition as open. Nothing is coded until this page is approved. Any change after approval creates `cdi_benchmark_v2`.
+The owner's rule (Oct 18, 2026): a strategy that does not beat the CDI over the same period failed, because the money could have stayed in a risk-free investment. Brief section 10 lists the definition as open. The owner approved it as written. Any change creates `cdi_benchmark_v2`.
 
 ## Decisions already taken by the owner
 
@@ -26,7 +26,7 @@ excess    = cagr - cdi_cagr                 in percentage points of CAGR
 beats_cdi = excess > 0
 ```
 
-- The CDI is compounded day by day, as the real CDI is. A window with no CDI rate for some business day is an error, not a silent gap: the data layer must say which days are missing.
+- The CDI is compounded day by day, as the real CDI is. A window with no CDI rate for some business day is an error, not a silent gap, and the error names the missing days. A business day is a date of the evaluated candles, so no holiday calendar is needed; CDI dates that are not candle dates are still compounded.
 - A strategy with zero trades has `cagr = 0`, so it loses to any positive CDI. That is intended: doing nothing is not an edge, it is cash at zero.
 - `excess` compares CAGR with CAGR. It does not adjust for risk. A strategy can beat the CDI and still deserve no money if its drawdown is large, so the notebooks show `excess` next to the equity drawdown and Calmar.
 
@@ -58,7 +58,7 @@ Sanity check against the owner's rule of thumb: 0.04% per day for 21 days is 0.8
 
 A pure function in `core` takes a table of dates and daily rates and returns `factor`, `cdi_cagr`, `excess` and `beats_cdi`. Downloading the series from the Central Bank happens in the notebook, never in `core`.
 
-## Open questions for the owner
+## Decisions (owner, Oct 18, 2026)
 
-1. Is the window start rule right (accrue from the business day after the first candle)? The alternative is to include the first day, which adds one day of CDI.
-2. Should `beats_cdi` need a margin, for example `excess > 1` point, or is `> 0` enough? I suggest `> 0` and letting the table show the size of the gap.
+1. The CDI accrues from the business day after the first candle. Approved.
+2. `beats_cdi` is `excess > 0`, no margin. Approved. A "beats IBOV" comparison comes later and is not part of this spec.
