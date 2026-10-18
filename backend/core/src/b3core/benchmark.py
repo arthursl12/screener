@@ -17,7 +17,9 @@ class CdiComparison:
     beats_cdi: bool
 
 
-def _local_dates(values: pd.DatetimeIndex | Sequence[pd.Timestamp]) -> pd.DatetimeIndex:
+def _local_dates(
+    values: "pd.DatetimeIndex | pd.Series | Sequence[pd.Timestamp]",
+) -> pd.DatetimeIndex:
     index = pd.DatetimeIndex(pd.to_datetime(list(values)))
     if index.tz is not None:
         index = index.tz_convert(LOCAL_TIMEZONE).tz_localize(None)
@@ -28,7 +30,7 @@ def compare_with_cdi(
     cagr: float,
     years: float,
     rates: pd.Series,
-    trading_days: pd.DatetimeIndex | Sequence[pd.Timestamp],
+    trading_days: "pd.DatetimeIndex | pd.Series | Sequence[pd.Timestamp]",
 ) -> CdiComparison:
     """Compound the CDI over the window of `trading_days` and compare it with `cagr`.
 
