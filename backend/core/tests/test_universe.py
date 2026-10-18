@@ -93,3 +93,66 @@ def test_a_missing_cdi_day_is_an_error() -> None:
 
     with pytest.raises(ValueError, match="2024-01-04"):
         scan(cdi=gap)
+
+
+# --- ranking combinations across tickers -------------------------------------------------------
+
+
+def trials(rows: list[tuple[float, str, float, float, int]]) -> pd.DataFrame:
+    """(rsi_entry, exit_mode, objective, result, n_trades), the columns of `trials_table`."""
+    return pd.DataFrame(
+        rows, columns=["rsi_entry", "exit_mode", "objective", "result", "n_trades"]
+    ).assign(max_days=None)
+
+
+def test_combinations_are_ranked_by_how_they_do_across_tickers() -> None:
+    from b3core.universe import rank_across_tickers
+
+    tables = {
+        "AAA3": trials([(10, "target", 60, 0.30, 50), (20, "target", 40, 0.10, 60),
+                        (30, "rsi", 20, -0.05, 30)]),
+        "BBB3": trials([(10, "target", 30, -0.02, 55), (20, "target", 50, 0.0, 65)]),
+        "CCC3": trials([(10, "target", 120, 0.50, 80), (20, "target", 10, 0.01, 10)]),
+    }  # fmt: skip
+    params = ["rsi_entry", "exit_mode", "max_days"]
+
+    ranked = rank_across_tickers(tables, params, min_trades=30)
+
+    # (20, target) on CCC3 has 10 trades: below the gate, so only two tickers count for it
+    first, second, third = ranked.iloc[0], ranked.iloc[1], ranked.iloc[2]
+    assert (first["rsi_entry"], first["exit_mode"]) == (10, "target")
+    assert first["n_tickers"] == 3
+    assert first["median_objective"] == 60  # median of 60, 30, 120 (the mean would be 70)
+    assert first["pos_share"] == pytest.approx(2 / 3)  # BBB3 lost money
+    assert first["worst_result"] == pytest.approx(-0.02)
+    assert (second["rsi_entry"], second["exit_mode"]) == (20, "target")
+    assert second["n_tickers"] == 2
+    assert second["median_objective"] == 45  # median of 40 and 50
+    assert second["pos_share"] == 0.5  # a result of exactly zero is not a gain
+    assert third["n_tickers"] == 1  # (30, rsi) only passed the gate on AAA3
+
+
+def test_a_combination_must_work_on_enough_tickers_to_be_ranked() -> None:
+    from b3core.universe import rank_across_tickers
+
+    tables = {
+        "AAA3": trials([(10, "target", 60, 0.30, 50), (30, "rsi", 99, 0.90, 70)]),
+        "BBB3": trials([(10, "target", 30, 0.10, 55)]),
+    }
+
+    ranked = rank_across_tickers(tables, ["rsi_entry", "exit_mode", "max_days"],
+                                 min_trades=30, min_tickers=2)  # fmt: skip
+
+    assert len(ranked) == 1  # the 99-point combination exists on one ticker only
+    assert ranked.iloc[0]["rsi_entry"] == 10
+
+
+def test_a_missing_value_in_a_parameter_is_kept_not_dropped() -> None:
+    from b3core.universe import rank_across_tickers
+
+    table = trials([(10, "target", 60, 0.3, 50)]).assign(max_days=[5.0])
+    other = trials([(10, "target", 40, 0.1, 50)])  # max_days None: a different combination
+
+    ranked = rank_across_tickers({"A": table, "B": other}, ["rsi_entry", "exit_mode", "max_days"])
+
+    assert len(ranked) == 2

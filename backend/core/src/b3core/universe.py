@@ -54,3 +54,42 @@ def scan_universe(
     table = pd.DataFrame.from_dict(rows, orient="index")
     table.attrs["skipped"] = skipped
     return table
+
+
+def rank_across_tickers(
+    tables: Mapping[str, pd.DataFrame],
+    params: list[str],
+    *,
+    min_trades: int = 0,
+    min_tickers: int = 1,
+) -> pd.DataFrame:
+    """Rank parameter combinations by how they do across tickers, best first.
+
+    `tables` maps a ticker to its trials (`OptimizationResult.trials_table()`: the parameter
+    columns plus `objective`, `result` and `n_trades`). A ticker counts for a combination only
+    with at least `min_trades` trades. A combination needs `min_tickers` tickers to be ranked.
+    The key is the median objective, so one lucky ticker cannot carry a combination.
+    """
+    frames = []
+    for ticker, table in tables.items():
+        kept = table[table["n_trades"] >= min_trades]
+        frames.append(kept.assign(ticker=ticker))
+    long = pd.concat(frames, ignore_index=True)
+    # None and NaN are values (max_days off), and groupby would silently drop them
+    keys = long[params].astype(object).where(long[params].notna(), "none")
+    long["_combo"] = keys.astype(str).agg("|".join, axis=1)
+    grouped = long.groupby("_combo", sort=False)
+    ranked = grouped.agg(
+        n_tickers=("ticker", "nunique"),
+        median_objective=("objective", "median"),
+        mean_objective=("objective", "mean"),
+        pos_share=("result", lambda r: float((r > 0).mean())),
+        median_result=("result", "median"),
+        worst_result=("result", "min"),
+    )
+    first = long.drop_duplicates("_combo").set_index("_combo")[params]
+    ranked = first.join(ranked)
+    ranked = ranked[ranked["n_tickers"] >= min_tickers]
+    return ranked.sort_values(
+        ["median_objective", "n_tickers"], ascending=[False, False], kind="stable"
+    ).reset_index(drop=True)
