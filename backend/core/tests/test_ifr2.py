@@ -274,9 +274,13 @@ def test_a_flat_start_gives_no_signal() -> None:
     assert run(flat, rsi_entry=100, max_days=1) == []
 
 
-def test_only_the_daily_timeframe_is_accepted() -> None:
-    with pytest.raises(ValueError, match="daily"):
-        run_ifr2(candles(SERIES), config(), timeframe=Timeframe.H2)
+def test_other_timeframes_run_but_warn_that_they_are_outside_the_spec() -> None:
+    daily = run_ifr2(candles(SERIES), config())
+
+    with pytest.warns(UserWarning, match="daily"):
+        other = run_ifr2(candles(SERIES), config(), timeframe=Timeframe.H2)
+
+    assert other.trades == daily.trades  # the rules count candles, so the result is the same
 
 
 def test_the_preset_charges_the_b3_fee() -> None:

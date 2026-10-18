@@ -1,6 +1,7 @@
 """IFR2 (RSI 2) de compra engine. Rules: brief section 7. Pure: no I/O, no clock."""
 
 import math
+import warnings
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -152,9 +153,13 @@ def run_ifr2(
     A signal on candle t buys at that candle's close (a named exception to section 6, rule 1).
     Exits are checked from the next candle on: the target first, then the time stop, then the
     RSI exit. An open position at the end of the data is not a closed trade and is left out.
+    Other timeframes run (every rule counts candles) but warn: the spec is daily.
     """
     if timeframe is not Timeframe.D1:
-        raise ValueError("IFR2 runs on the daily timeframe only")
+        warnings.warn(
+            f"IFR2 is specified for daily candles; {timeframe.value} is outside the spec",
+            stacklevel=2,
+        )
 
     open_ = candles["open"].to_numpy(dtype=np.float64)
     high = candles["high"].to_numpy(dtype=np.float64)

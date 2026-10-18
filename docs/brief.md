@@ -290,7 +290,7 @@ Expected result: risk per share 0.17, quantity `floor(200 / 0.17) = 1176`, round
 
 **Not specified yet, blocked by an open question:** the mirror 123 de venda.
 
-**IFR2 (RSI 2) de compra. Drafted by Claude from the owner's decisions of Oct 17, 2026; the owner reviewed it, signed off the assumptions and widened two grids. The owner still rewrites it in their own words.** The idea comes from the research notes in `ifr2/`, which are secondary sources whose numbers are not verified. The rules below are the only IFR2 rules the engine implements. Long only, daily candles only (the strategy refuses any other timeframe).
+**IFR2 (RSI 2) de compra. Drafted by Claude from the owner's decisions of Oct 17, 2026; the owner reviewed it, signed off the assumptions and widened two grids. The owner still rewrites it in their own words.** The idea comes from the research notes in `ifr2/`, which are secondary sources whose numbers are not verified. The rules below are the only IFR2 rules the engine implements. Long only, specified for daily candles. Other timeframes run, since every rule counts candles, but they raise a warning and are outside the spec (owner decision, Oct 18, 2026).
 
 - **Indicators**, on the raw close (split-adjusted, dividends ignored): `RSI` with Wilder smoothing over `rsi_period`, and `ATR` with Wilder smoothing over `atr_period` (both in `indicators.py`).
 - **Signal:** on a closed candle t, `RSI[t] <= rsi_entry`. While `RSI` or `ATR` is not yet available (the first `max(rsi_period, atr_period)` bars), the signal is ignored.
@@ -348,7 +348,7 @@ Expected result: risk per share 0.17, quantity `floor(200 / 0.17) = 1176`, round
 
 Expected result: risk distance `2 * 0.5375 = 1.075`, quantity `floor(100 / 1.075) = 93`, cost `93 * 9.50 = R$ 883.50`, within the capital cap. PnL is `93 * (10.00 - 9.50)`, which is **+R$ 46.50**, after 2 candles in the trade. (These RSI and ATR values were checked against `b3core.indicators`.)
 
-**IFR2 golden cases to write, one test each:** the worked example; RSI exactly at the threshold; the target built from previous candles only; a gap above the target filling at the open; the RSI exit at the close; `target_or_rsi` with both firing on one candle; the time stop and its day counting; no exit check on the entry candle; no entry while a position is open; same-day re-entry off and on; warm-up bars never signal; ATR zero or missing skipping the signal; quantity rounding to zero; the capital cap; costs of 0.03% on both sides; an open position at the end of the data left out; a flat start giving no signal; a non-daily timeframe refused.
+**IFR2 golden cases to write, one test each:** the worked example; RSI exactly at the threshold; the target built from previous candles only; a gap above the target filling at the open; the RSI exit at the close; `target_or_rsi` with both firing on one candle; the time stop and its day counting; no exit check on the entry candle; no entry while a position is open; same-day re-entry off and on; warm-up bars never signal; ATR zero or missing skipping the signal; quantity rounding to zero; the capital cap; costs of 0.03% on both sides; an open position at the end of the data left out; a flat start giving no signal; a non-daily timeframe running with a warning.
 
 ## 8. Testing strategy
 

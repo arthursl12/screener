@@ -94,9 +94,9 @@ def test_target_or_rsi_keeps_both_the_lookback_and_the_rsi_exit() -> None:
     assert s.restricted(BASE).size == 4
 
 
-def test_an_intraday_timeframe_is_refused_by_the_ifr2_strategy() -> None:
+def test_an_intraday_timeframe_reaches_the_engine_and_warns() -> None:
     from b3core.data import Timeframe
 
-    with pytest.raises(ValueError, match="daily"):
+    with pytest.warns(UserWarning, match="daily"):
         optimize(random_walk_candles(50, seed=1), BASE, space(rsi_entry=[20]),
                  timeframe=Timeframe.H2, oos_fraction=0.0)  # fmt: skip
