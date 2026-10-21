@@ -144,6 +144,13 @@ def run_turtle(candles: pd.DataFrame, config: TurtleConfig) -> TurtleResult:
                 )
                 realized += pnl
                 units = []
+            else:
+                reference = units[-1][1] if config.use_last_fill else average
+                level = reference + config.add_atr_mult * previous_atr  # NaN while no ATR
+                if len(units) < config.max_units and close[t] > level:
+                    size = _quantity(float(atr_values[t]), config)  # the current ATR
+                    if size > 0:
+                        units.append((size, float(close[t])))
         elif close[t] > entry_level[t]:  # False while the level is NaN
             size = _quantity(float(atr_values[t]), config)
             if size > 0:

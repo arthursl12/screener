@@ -115,3 +115,79 @@ def test_sell_takes_priority_over_stop_on_the_same_candle() -> None:
 
     assert t.exit_reason == "sell"
     assert t.exit == pytest.approx(10.05)
+
+
+# Pyramiding. With max_units 2, bar 4 passes the add level 10.55 + 0.325 = 10.875 and adds
+# floor(200 / 0.4875) = 410 shares at 11.10, sized with the CURRENT ATR (a unit of 615 would use
+# the previous one). The average becomes (615 * 10.55 + 410 * 11.10) / 1025 = 10.77024.
+def test_second_worked_example_pyramiding() -> None:
+    result = run(SERIES, max_units=2)
+    (t,) = result.trades
+
+    assert t.units == 2
+    assert t.qty == 615 + 410
+    assert t.entry == pytest.approx(11_039.25 / 1025)
+    assert t.exit == pytest.approx(10.70)
+    assert t.pnl == pytest.approx(615 * 0.15 + 410 * -0.40)  # -71.75
+    assert result.peak_cost == pytest.approx(615 * 10.55 + 410 * 11.10)
+
+
+# A rally on bar 5 to a close of 11.50. After the add on bar 4 the average is 10.77024 and the
+# bar-4 ATR is 0.4875, so the next add level is 11.25774: bar 5 passes it. Bar 5 has TR 0.50 and
+# ATR 0.49375, so the third unit is floor(200 / 0.49375) = 405 shares at 11.50.
+R5_RALLY: Row = (11.10, 11.55, 11.05, 11.50)
+RALLY = [R0, R1, R2, R3, R4, R5_RALLY, R6]
+
+
+def test_max_units_is_a_ceiling() -> None:
+    (t,) = run(RALLY, max_units=2).trades
+
+    assert t.units == 2
+    assert t.pnl == pytest.approx(-71.75)
+
+
+def test_a_third_unit_is_added_when_the_ceiling_allows() -> None:
+    (t,) = run(RALLY, max_units=3).trades
+
+    assert t.units == 3
+    assert t.qty == 615 + 410 + 405
+    assert t.pnl == pytest.approx(615 * 0.15 + 410 * -0.40 + 405 * -0.80)  # -395.75
+
+
+def test_add_level_can_be_measured_from_the_last_fill() -> None:
+    # From the last fill (11.10) the level is 11.10 + 0.4875 = 11.5875: the close 11.50 is below it.
+    (t,) = run(RALLY, max_units=3, use_last_fill=True).trades
+
+    assert t.units == 2
+
+
+# A candle that would add AND sell. After a jump to 16.00 the average (13.871) lags the price, so
+# the last close 14.60 is above the add level 13.871 + 0.553 = 14.424, and below the exit level
+# min(15.40, 15.35) = 15.35. The exit wins and no unit is added on that candle (brief 7c,
+# assumption). The numbers come from an independent throwaway simulation, not by hand.
+ADD_AND_SELL = [
+    (10.0, 10.2, 9.95, 10.0),
+    (10.1, 10.5, 10.05, 10.3),
+    (10.2, 10.8, 10.15, 10.6),
+    (10.7, 10.75, 10.4, 10.6),
+    (10.7, 11.1, 10.5, 10.9),
+    (10.8, 11.4, 10.6, 11.2),
+    (11.1, 11.3, 10.95, 11.0),
+    (10.9, 13.55, 10.85, 13.5),
+    (13.5, 16.2, 13.3, 16.0),
+    (15.9, 16.1, 15.6, 15.8),
+    (15.8, 16.0, 15.75, 15.8),
+    (15.8, 16.0, 15.4, 15.6),
+    (15.7, 15.75, 15.35, 15.4),
+    (15.4, 15.6, 14.4, 14.6),
+]
+
+
+def test_an_exit_candle_takes_no_add() -> None:
+    (t,) = run(ADD_AND_SELL, max_units=10).trades
+
+    assert t.exit_reason == "sell"
+    assert t.exit == pytest.approx(14.60)
+    assert t.units == 8  # a ninth unit on the exit candle would change these three
+    assert t.qty == 1894
+    assert t.entry == pytest.approx(13.871277719112989)
