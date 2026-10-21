@@ -5,3 +5,4 @@
 # stripped. `make lint` refuses an output that holds a table of raw candles.
 notebooks/turtle.ipynb -filter
 notebooks/ifr2_liquid.ipynb -filter
+notebooks/turtle_stocks.ipynb -filter
