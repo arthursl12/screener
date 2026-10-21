@@ -336,3 +336,70 @@ def test_invalid_parameters_are_refused(overrides: dict[str, object]) -> None:
 
 def test_the_config_round_trips_through_a_dict() -> None:
     assert TurtleConfig.from_dict(config().to_dict()) == config()
+
+
+# fill_at next_open. The signal, the size and the levels come from candle t; the order fills at
+# Open[t+1]. On SERIES (single unit): the breakout on bar 3 (close 10.55, ATR 0.325, 615 shares)
+# fills at the open of bar 4, 10.85. The exit signal on bar 6 is the last candle: no next open,
+# so the position is still open. Extend the series with a bar 7 opening at 10.65 to see the exit.
+BAR_7: Row = (10.65, 10.70, 10.55, 10.60)
+
+
+def test_next_open_fills_the_entry_and_the_exit_at_the_next_open() -> None:
+    (t,) = run([*SERIES, BAR_7], fill_at="next_open").trades
+
+    assert t.qty == 615  # sized with the signal candle's ATR, not with the fill price
+    assert t.entry == pytest.approx(10.85)
+    assert t.exit == pytest.approx(10.65)
+    assert t.pnl == pytest.approx(615 * (10.65 - 10.85))  # -123.00
+    assert (t.entry_index, t.exit_index, t.days) == (4, 7, 3)
+    assert t.exit_reason == "sell"
+
+
+def test_next_open_signal_on_the_last_candle_takes_no_trade() -> None:
+    result = run(SERIES[:4], fill_at="next_open")  # the breakout is on the last candle
+
+    assert result.trades == []
+    assert result.open_units == 0
+
+
+def test_next_open_position_is_marked_at_the_close_until_the_exit_fills() -> None:
+    # Bar 4 opens at 10.85 (the fill) and closes at 11.10: equity marks 615 shares from 10.85.
+    # The exit signal on bar 6 leaves the position open through that close.
+    equity = run([*SERIES, BAR_7], fill_at="next_open").equity
+
+    assert equity[3] == pytest.approx(10_000)  # signal only, nothing filled yet
+    assert equity[4] == pytest.approx(10_000 + 615 * (11.10 - 10.85))
+    assert equity[6] == pytest.approx(10_000 + 615 * (10.70 - 10.85))
+    assert equity[7] == pytest.approx(10_000 + 615 * (10.65 - 10.85))  # closed at the open
+
+
+# Adds. The entry fills at 10.85 (open of bar 4), so the add level is 10.85 + 0.325 = 11.175 and
+# the jump candle (close 12.00) passes it: 213 shares (ATR 0.9375), filled at the open of bar 5,
+# 12.05. The sell signal on bar 6 (close 10.60 < exit level 10.80) fills at the open of bar 7.
+NEXT_OPEN_ADD = [
+    R0,
+    R1,
+    R2,
+    R3,
+    JUMP,
+    (12.05, 12.10, 11.90, 12.00),
+    (11.00, 11.05, 10.50, 10.60),
+    (10.55, 10.60, 10.40, 10.45),
+]
+
+
+def test_next_open_adds_fill_at_the_next_open_and_use_the_actual_fills() -> None:
+    (t,) = run(NEXT_OPEN_ADD, max_units=2, fill_at="next_open").trades
+
+    assert t.units == 2
+    assert t.qty == 615 + 213
+    assert t.entry == pytest.approx((615 * 10.85 + 213 * 12.05) / 828)
+    assert t.exit == pytest.approx(10.55)
+    assert t.pnl == pytest.approx(615 * (10.55 - 10.85) + 213 * (10.55 - 12.05))  # -504.0
+    assert (t.entry_index, t.exit_index) == (4, 7)
+
+
+def test_the_fill_rule_is_validated() -> None:
+    with pytest.raises(ValueError):
+        config(fill_at="at_random")

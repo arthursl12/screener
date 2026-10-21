@@ -16,6 +16,8 @@ from b3core.data import Timeframe
 from b3core.indicators import atr
 from b3core.metrics import Metrics, compute_metrics
 
+FILL_AT = ("signal_close", "next_open")
+
 # B3 fee per side in percent of traded value (brief section 10). The engine default is 0 so
 # golden tests stay readable; the preset uses this value.
 TURTLE_COST_PCT = 0.03
@@ -38,6 +40,7 @@ class TurtleConfig:
     risk_pct: float = 2.0
     lot_size: int = 1
     cost_pct: float = 0.0  # percent of traded value, on every fill
+    fill_at: str = "signal_close"  # "signal_close" (the script) or "next_open"
 
     def __post_init__(self) -> None:
         if self.entry_period < 1:
@@ -58,6 +61,8 @@ class TurtleConfig:
             raise ValueError("lot_size must be at least 1")
         if self.cost_pct < 0:
             raise ValueError("cost_pct must be 0 or more")
+        if self.fill_at not in FILL_AT:
+            raise ValueError(f"fill_at must be one of {FILL_AT}, got {self.fill_at!r}")
 
     @classmethod
     def preset(cls, **overrides: Any) -> "TurtleConfig":
@@ -140,7 +145,9 @@ def run_turtle(
     *,
     timeframe: Timeframe = Timeframe.D1,
 ) -> TurtleResult:
-    """Simulate Turtle de compra on closed daily candles, filling at the signal close.
+    """Simulate Turtle de compra on closed daily candles (brief section 7c).
+
+    Orders fill at the signal close (`fill_at` signal_close) or at the next open (next_open).
 
     Other timeframes run (every rule counts candles) but warn: the spec is daily.
     """
@@ -158,7 +165,9 @@ def run_turtle(
     entry_level = _channel(high, config.entry_period, use_max=True)
     exit_level = _channel(low, config.exit_period, use_max=False)
 
+    open_ = candles["open"].to_numpy(dtype=np.float64)
     cost_rate = config.cost_pct / 100.0
+    last = len(close) - 1
     trades: list[TurtleTrade] = []
     equity = np.empty(len(close))
     realized = 0.0
@@ -167,51 +176,70 @@ def run_turtle(
     multi_add_candles = 0
     units: list[tuple[int, float]] = []  # (quantity, fill price)
     entry_bar = 0
+    pending: tuple[str, int, str] | None = None  # (kind, quantity, reason), fills at the next open
+
+    def fill(kind: str, size: int, reason: str, price: float, t: int) -> None:
+        """Apply an order at `price`: open a position, add a unit, or leave with every unit."""
+        nonlocal units, realized, entry_bar
+        if kind == "exit":
+            qty = sum(q for q, _ in units)
+            cost_in = sum(q * p for q, p in units)
+            pnl = qty * price - cost_in - cost_rate * (cost_in + qty * price)
+            trades.append(
+                TurtleTrade(
+                    n=len(trades) + 1,
+                    entry_index=entry_bar,
+                    exit_index=t,
+                    entry_ts=ts.iloc[entry_bar],
+                    exit_ts=ts.iloc[t],
+                    entry=cost_in / qty,
+                    exit=price,
+                    qty=qty,
+                    units=len(units),
+                    pnl=pnl,
+                    days=t - entry_bar,
+                    exit_reason=reason,
+                )
+            )
+            realized += pnl
+            units = []
+        elif kind == "buy":
+            units = [(size, price)]
+            entry_bar = t
+        else:
+            units.append((size, price))
 
     for t in range(len(close)):
+        if pending is not None:  # fill_at next_open: the order from the previous close
+            kind, size, reason = pending
+            pending = None
+            fill(kind, size, reason, float(open_[t]), t)
+
+        order: tuple[str, int, str] | None = None
         if units:
             qty = sum(q for q, _ in units)
             average = sum(q * p for q, p in units) / qty
             previous_atr = atr_values[t - 1] if t > 0 else np.nan
             sell = close[t] < exit_level[t]  # False while the level is NaN
             stop = close[t] < average - previous_atr  # False while the ATR is NaN
-            if sell or stop:  # a sell wins over a stop on the same candle
-                pnl = sum(q * (float(close[t]) - p) for q, p in units) - cost_rate * (
-                    sum(q * p for q, p in units) + qty * float(close[t])
-                )
-                trades.append(
-                    TurtleTrade(
-                        n=len(trades) + 1,
-                        entry_index=entry_bar,
-                        exit_index=t,
-                        entry_ts=ts.iloc[entry_bar],
-                        exit_ts=ts.iloc[t],
-                        entry=average,
-                        exit=float(close[t]),
-                        qty=qty,
-                        units=len(units),
-                        pnl=pnl,
-                        days=t - entry_bar,
-                        exit_reason="sell" if sell else "stop",
-                    )
-                )
-                realized += pnl
-                units = []
+            if sell or stop:  # a sell wins over a stop, and an exit candle takes no add
+                order = ("exit", qty, "sell" if sell else "stop")
             else:
                 reference = units[-1][1] if config.use_last_fill else average
                 level = reference + config.add_atr_mult * previous_atr  # NaN while no ATR
                 if len(units) < config.max_units and close[t] > level:
                     size = _quantity(float(atr_values[t]), config)  # the current ATR
                     if size > 0:
-                        units.append((size, float(close[t])))
-                        # Would the same close still pass the next level? Then more than one
-                        # add was due; only one is made per candle.
-                        qty = sum(q for q, _ in units)
-                        average = sum(q * p for q, p in units) / qty
-                        reference = units[-1][1] if config.use_last_fill else average
+                        order = ("add", size, "")
+                        # Would the same close still pass the level after this add? Then more
+                        # than one add was due; only one is made per candle.
+                        after = [*units, (size, float(close[t]))]
+                        after_qty = sum(q for q, _ in after)
+                        after_average = sum(q * p for q, p in after) / after_qty
+                        after_reference = after[-1][1] if config.use_last_fill else after_average
                         if (
-                            len(units) < config.max_units
-                            and close[t] > reference + config.add_atr_mult * previous_atr
+                            len(after) < config.max_units
+                            and close[t] > after_reference + config.add_atr_mult * previous_atr
                         ):
                             multi_add_candles += 1
                     else:
@@ -219,10 +247,15 @@ def run_turtle(
         elif close[t] > entry_level[t]:  # False while the level is NaN
             size = _quantity(float(atr_values[t]), config)
             if size > 0:
-                units = [(size, float(close[t]))]
-                entry_bar = t
+                order = ("buy", size, "")
             elif math.isfinite(atr_values[t]):  # a missing ATR is warm-up, not a skipped signal
                 skipped_units += 1
+
+        if order is not None:
+            if config.fill_at == "signal_close":
+                fill(*order, float(close[t]), t)
+            elif t < last:  # a signal on the last candle has no next open
+                pending = order
 
         floating = sum(q * (close[t] - p) for q, p in units) - cost_rate * sum(
             q * p for q, p in units
