@@ -1,29 +1,44 @@
-"""Run one IFR2 config over many tickers. Pure: candles and CDI rates in, a table out."""
+"""Run one strategy config over many tickers. Pure: candles and CDI rates in, a table out."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from typing import Any, Protocol
 
 import pandas as pd
 
 from b3core.benchmark import compare_with_cdi, compare_with_index, index_equity
 from b3core.ifr2 import Ifr2Config, run_ifr2
+from b3core.metrics import Metrics
 from b3core.portfolio import buy_and_hold_equity, equity_drawdown, summarize_portfolio
 from b3core.score import score_v1
+from b3core.turtle import TurtleConfig
+
+
+class _Run(Protocol):
+    """What a strategy result offers the scan: its metrics and the length of the data."""
+
+    @property
+    def metrics(self) -> Metrics: ...
+
+    @property
+    def years(self) -> float | None: ...
 
 
 def scan_universe(
     data: Mapping[str, pd.DataFrame],
-    config: Ifr2Config,
+    config: Ifr2Config | TurtleConfig,
     cdi_rates: pd.Series,
     *,
     min_candles: int = 250,
     index_closes: pd.Series | None = None,
+    runner: Callable[[pd.DataFrame, Any], _Run] = run_ifr2,
 ) -> pd.DataFrame:
     """One row per ticker, in the order given: the metrics, `score_v1` and the benchmarks.
 
     Each ticker is compared, over its own window, with the CDI and with buying and holding the
     ticker (docs/cdi.md, docs/ibov.md). With `index_closes` (the IBOV close by date) it is also
     compared with holding the index. Tickers with fewer than `min_candles` candles are left out
-    and named in `table.attrs["skipped"]`.
+    and named in `table.attrs["skipped"]`. `runner` runs the strategy: `run_ifr2` for an
+    `Ifr2Config` (the default), `run_turtle` for a `TurtleConfig`.
     """
     rows: dict[str, dict[str, float | int | bool]] = {}
     skipped: list[str] = []
@@ -31,7 +46,7 @@ def scan_universe(
         if len(candles) < min_candles:
             skipped.append(ticker)
             continue
-        result = run_ifr2(candles, config)
+        result = runner(candles, config)
         m = result.metrics
         row: dict[str, float | int | bool] = {
             "n_trades": m.n_trades,

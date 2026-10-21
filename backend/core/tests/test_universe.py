@@ -6,6 +6,7 @@ import pytest
 from b3core.benchmark import compare_with_cdi, compare_with_index
 from b3core.ifr2 import Ifr2Config, run_ifr2
 from b3core.score import score_v1
+from b3core.turtle import TurtleConfig, run_turtle
 from b3core.universe import scan_universe
 
 WORKED = [  # the worked example of brief section 7: one trade, +R$ 46.50
@@ -219,3 +220,29 @@ def test_a_missing_value_in_a_parameter_is_kept_not_dropped() -> None:
     ranked = rank_across_tickers({"A": table, "B": other}, ["rsi_entry", "exit_mode", "max_days"])
 
     assert len(ranked) == 2
+
+
+def test_a_turtle_config_scans_with_the_turtle_runner() -> None:
+    turtle_rows = [  # the worked example of brief section 7c: one trade, +R$ 92.25
+        (10.00, 10.20, 9.90, 10.10),
+        (10.10, 10.30, 10.00, 10.20),
+        (10.20, 10.40, 10.10, 10.30),
+        (10.30, 10.60, 10.25, 10.55),
+        (10.85, 11.20, 10.80, 11.10),
+        (11.10, 11.30, 11.00, 11.20),
+        (11.00, 11.05, 10.60, 10.70),
+    ]
+    turtle = TurtleConfig(
+        entry_period=2, exit_period=2, atr_period=2, max_units=1, capital_brl=10_000, risk_pct=2.0
+    )
+
+    table = scan_universe(
+        {"TURT3": candles(turtle_rows)}, turtle, CDI, min_candles=1, runner=run_turtle
+    )
+
+    row = table.loc["TURT3"]
+    direct = run_turtle(candles(turtle_rows), turtle)
+    assert row["n_trades"] == 1
+    assert row["result"] == pytest.approx(92.25 / 10_000)
+    assert row["cagr"] == pytest.approx(direct.metrics.cagr)
+    assert "beats_cdi" in table.columns and "bh_cagr" in table.columns
