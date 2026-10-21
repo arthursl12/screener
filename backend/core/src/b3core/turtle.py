@@ -119,8 +119,12 @@ def run_turtle(candles: pd.DataFrame, config: TurtleConfig) -> TurtleResult:
 
     for t in range(len(close)):
         if units:
-            if close[t] < exit_level[t]:  # False while the level is NaN
-                qty = sum(q for q, _ in units)
+            qty = sum(q for q, _ in units)
+            average = sum(q * p for q, p in units) / qty
+            previous_atr = atr_values[t - 1] if t > 0 else np.nan
+            sell = close[t] < exit_level[t]  # False while the level is NaN
+            stop = close[t] < average - previous_atr  # False while the ATR is NaN
+            if sell or stop:  # a sell wins over a stop on the same candle
                 pnl = sum(q * (float(close[t]) - p) for q, p in units)
                 trades.append(
                     TurtleTrade(
@@ -129,13 +133,13 @@ def run_turtle(candles: pd.DataFrame, config: TurtleConfig) -> TurtleResult:
                         exit_index=t,
                         entry_ts=ts.iloc[entry_bar],
                         exit_ts=ts.iloc[t],
-                        entry=sum(q * p for q, p in units) / qty,
+                        entry=average,
                         exit=float(close[t]),
                         qty=qty,
                         units=len(units),
                         pnl=pnl,
                         days=t - entry_bar,
-                        exit_reason="sell",
+                        exit_reason="sell" if sell else "stop",
                     )
                 )
                 realized += pnl

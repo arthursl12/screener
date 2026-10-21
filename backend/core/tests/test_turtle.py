@@ -91,3 +91,27 @@ def test_result_metrics_use_the_configured_capital() -> None:
 
     assert result.metrics.n_trades == 1
     assert result.metrics.result == pytest.approx(92.25 / 10_000)
+
+
+# Stop tests. After the buy at 10.55 on bar 3 (ATR 0.325), bar 4 has TR 0.65 and ATR 0.4875.
+# The stop reads the PREVIOUS candle's ATR: 10.55 - 0.325 = 10.225. With the current ATR it would
+# be 10.55 - 0.4875 = 10.0625, so a close of 10.20 tells the two apart. The exit level of bar 4
+# is min(10.10, 10.25) = 10.10.
+STOP_BAR: Row = (10.40, 10.45, 9.90, 10.20)  # below 10.225, above the exit level 10.10
+BOTH_BAR: Row = (10.40, 10.45, 9.90, 10.05)  # below the stop and below the exit level
+
+
+def test_stop_is_read_on_the_close_with_the_previous_atr() -> None:
+    (t,) = run([R0, R1, R2, R3, STOP_BAR]).trades
+
+    assert t.exit_reason == "stop"
+    assert t.exit == pytest.approx(10.20)  # the close, not the stop level 10.225
+    assert t.pnl == pytest.approx(615 * (10.20 - 10.55))
+    assert (t.entry_index, t.exit_index, t.days) == (3, 4, 1)
+
+
+def test_sell_takes_priority_over_stop_on_the_same_candle() -> None:
+    (t,) = run([R0, R1, R2, R3, BOTH_BAR]).trades
+
+    assert t.exit_reason == "sell"
+    assert t.exit == pytest.approx(10.05)
