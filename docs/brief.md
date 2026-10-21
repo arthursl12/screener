@@ -71,7 +71,7 @@ Phase 0 is a barebones but functional MVP: the engine, the 123 strategies, the b
 
 **Phase 0 tasks, in order.** Each one starts with a failing test.
 
-1. Minimal setup: a uv project with the `core` and `report` packages, a `CLAUDE.md`, a `Makefile` with `test`, `lint`, `fmt` and `notebook`, and ruff, mypy, pytest, Hypothesis, JupyterLab, Plotly and nbstripout (installed as a git filter). Add a `notebooks/` folder and a gitignored `data/` folder. One trivial core test proves the TDD loop.
+1. Minimal setup: a uv project with the `core` and `report` packages, a `CLAUDE.md`, a `Makefile` with `test`, `lint`, `fmt` and `notebook` (and `check-notebooks`, run by `lint`), and ruff, mypy, pytest, Hypothesis, JupyterLab, Plotly and nbstripout (installed as a git filter). Add a `notebooks/` folder and a gitignored `data/` folder. One trivial core test proves the TDD loop.
 2. Data: the `DataProvider` interface, `CsvProvider` and `YfinanceProvider` with a CSV cache in `data/`, and the ingest validation from section 5.
 3. Engine and strategies: the rules in section 6 and the 123 definition in section 7, with the golden and property tests from section 8, the metrics, and `score_v1`.
 4. Notebook slice: one ticker with 123 de compra, checked against the worked example, with the `report` charts.
@@ -208,7 +208,7 @@ Here `w` is the win rate, `G` the average gain and `L` the average absolute loss
 
 **Engine implementation.** Generate signals vectorized with pandas and NumPy. Simulate trades by looping over signals, not over candles, with numba only if a benchmark demands it. Later, add an event-driven engine behind the same `Engine` interface returning the same `BacktestResult`.
 
-**The notebook is the MVP's front end.** Start with one ticker and 123 de compra in a Jupyter notebook in `notebooks/`. Check the worked example from section 7 by hand, then plot the candles with entries and exits, the equity curve and the monthly returns with `report`. There is no UI: parameters are plain variables or typed config objects (`BacktestConfig`, and a `ParamRange` with start, stop and step for the optimizer) set in code. Configs serialize to JSON, so the same objects feed `run_hash` and the API later. The notebook imports the workspace packages and holds no trading logic. Strip outputs before committing (for example with nbstripout), so diffs stay readable and no vendor data lands in git.
+**The notebook is the MVP's front end.** Start with one ticker and 123 de compra in a Jupyter notebook in `notebooks/`. Check the worked example from section 7 by hand, then plot the candles with entries and exits, the equity curve and the monthly returns with `report`. There is no UI: parameters are plain variables or typed config objects (`BacktestConfig`, and a `ParamRange` with start, stop and step for the optimizer) set in code. Configs serialize to JSON, so the same objects feed `run_hash` and the API later. The notebook imports the workspace packages and holds no trading logic. Outputs are stripped before committing (nbstripout, a git filter), so diffs stay readable and no vendor data lands in git. The owner may publish the outputs of a results notebook for the portfolio (Oct 21, 2026): its filter is unset in `.gitattributes`, it shows derived results only (never a table of raw candles), and `make lint` checks that with `tools/check_notebook_outputs.py`.
 
 ## 7. Strategy specs: 123 de compra (123 de venda follows) and IFR2
 

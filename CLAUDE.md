@@ -42,7 +42,7 @@ Starting points: React is rusty; FastAPI, Postgres, Redis, SQLAlchemy, DuckDB an
 4. **Be deterministic.** The same inputs give the same outputs. No wall-clock reads, and randomness only from a seeded generator.
 5. **Time and prices.** UTC timestamps; trading rules evaluated in `America/Sao_Paulo`. Prices are float64, rounded to the instrument tick when filling orders.
 6. **No new dependencies** outside brief section 3 without asking. Pin versions and commit the lockfiles.
-7. **Never commit** credentials, `.env` files, real vendor market data or notebook outputs (nbstripout is installed as a git filter). Commit only small synthetic fixtures.
+7. **Never commit** credentials, `.env` files or real vendor market data (candles, files in `samples/` or `data/`). Commit only small synthetic fixtures. **Notebook outputs** are stripped by default (nbstripout is installed as a git filter). The owner may publish the outputs of a results notebook, for the portfolio, by unsetting its filter in `.gitattributes`. A published notebook may show derived results only (metrics, counts, charts) and never a table of raw candles; `make lint` runs `tools/check_notebook_outputs.py` to refuse that. Decided by the owner on Oct 21, 2026, on the reading that results derived from public Yahoo Finance data, not the data itself, are being shown. The Yahoo terms still restrict redistributing the data, so the rule is about derived results only.
 8. **Commit style.** Conventional Commits, one logical change per commit, `main` stays green.
 9. **Document decisions** as short ADRs in `docs/adr/` (context, decision, consequences). The owner writes them.
 10. **Report honestly.** If a test fails, a benchmark misses its budget, or a result looks too good, say so instead of tuning until it passes.
@@ -51,7 +51,7 @@ Starting points: React is rusty; FastAPI, Postgres, Redis, SQLAlchemy, DuckDB an
 
 ## Commands
 
-Phase 0: `make test`, `make lint`, `make fmt`, `make notebook`. From Phase 1: `make up`, `make down`, `make migrate`. Do not assume a command exists before the Makefile defines it.
+Phase 0: `make test`, `make lint`, `make fmt`, `make notebook`, `make check-notebooks` (part of `make lint`). From Phase 1: `make up`, `make down`, `make migrate`. Do not assume a command exists before the Makefile defines it.
 
 ## GitHub Copilot
 
