@@ -350,6 +350,72 @@ Expected result: risk distance `2 * 0.5375 = 1.075`, quantity `floor(100 / 1.075
 
 **IFR2 golden cases to write, one test each:** the worked example; RSI exactly at the threshold; the target built from previous candles only; a gap above the target filling at the open; the RSI exit at the close; `target_or_rsi` with both firing on one candle; the time stop and its day counting; no exit check on the entry candle; no entry while a position is open; same-day re-entry off and on; warm-up bars never signal; ATR zero or missing skipping the signal; quantity rounding to zero; the capital cap; costs of 0.03% on both sides; an open position at the end of the data left out; a flat start giving no signal; a non-daily timeframe running with a warning.
 
+## 7c. Strategy spec: Turtle breakout with ATR pyramiding (de compra)
+
+**Status. Drafted by Claude on Oct 21, 2026 from the owner's TradingView script (`turtle/turtle.pine`) and the owner's answers of the same day. The owner rewrites it in their own words.** The script is the source of truth; where it is silent, the rule is marked **(assumption)**, pinned by a test and listed in section 10. Long only, specified for daily candles. This strategy is a validation exercise: results are read as "does the rule set work", not as an account that could be funded (see the capital cap below).
+
+**Turtle de compra.** A channel breakout that adds to a winning position in steps of ATR and leaves on a channel breakdown or an ATR stop. All signals are read on a closed candle `t`.
+
+- **Indicators**, on the raw close: `ATR` with Wilder smoothing over `atr_period` (`indicators.py`). The channels use the highs and lows of the previous candles only, never the current one: `entry_level[t] = max(High[t-entry_period .. t-1])` and `exit_level[t] = min(Low[t-exit_period .. t-1])`.
+- **Warm-up:** a signal needs the entry channel (`entry_period` previous candles), `ATR[t]` and, for adds and stops, `ATR[t-1]`. Until they exist, nothing is signalled (owner, Oct 21, 2026).
+- **State.** The position is a list of **units**, each with its quantity and fill price. `avg` is the quantity-weighted average price of the current units, costs excluded. It starts over when the position is flat. The reference price `ref` is `avg`, or the price of the last unit when `use_last_fill` is on.
+- **Signals on candle `t`:**
+  - `buy`: flat at the start of the candle, and `Close[t] > entry_level[t]` (strict).
+  - `sell`: long, and `Close[t] < exit_level[t]` (strict).
+  - `stop`: long, and `Close[t] < avg - ATR[t-1]`. The stop is read on the close. It is **not** a resting order, so a gap or an intraday drop is not stopped at the stop price; the position leaves at the close and can lose more than one ATR (owner: follow the script).
+  - `add`: long, `units < max_units`, and `Close[t] > ref + add_atr_mult * ATR[t-1]`.
+- **Sizing.** `risk_budget = capital_brl * risk_pct / 100`. A new unit, entry or add, has quantity `floor(risk_budget / ATR[t])`, rounded down to the lot, with the current candle's `ATR[t]` (not `t-1`). So units differ in size. If the quantity is below one lot, or `ATR[t]` is zero or missing, the unit is skipped, the unit count does not advance, and the candle is counted for the warning below.
+- **Exits.** All units leave together. When both fire, `sell` takes priority over `stop`, and a candle that exits takes no add (**assumption**: the script places the add before the exit, which only adds a zero-PnL unit and its costs). The exit price depends on `fill_at`.
+- **One add per candle** (owner, Oct 21, 2026). If, after an add, the recomputed `avg` and add level would still be passed by the same close while `units < max_units`, that candle justified more than one add. It is counted.
+- **Warnings** (owner, Oct 21, 2026): the run emits one warning for each of the two cases, with the number of candles, and the result stores both counts: (1) a unit was skipped because its quantity was below one lot; (2) a candle justified more than one add.
+- **No re-entry on the exit candle:** a new `buy` is possible from the next candle on, because the position state is read at the start of the candle (**assumption**, equal to the script).
+- **Fills (`fill_at`).**
+  - `signal_close` (default, the script): every fill, entry, add and exit, is at `Close[t]` of the signal candle. This is the same named exception to section 6 rule 1 as IFR2 (`entry_at_signal_close`). Live, the order would go in shortly before the close; the real close is an auction price, so this is optimistic and no slippage is modelled.
+  - `next_open`: the signal, the quantity and the levels come from candle `t`, and the order fills at `Open[t+1]`. The units are in the position from that fill, so the average price uses the actual fills. While an order is pending nothing new is signalled. A signal on the last candle of the data has no next open and takes no trade. The owner runs both and compares them.
+- **Costs:** `cost_pct` percent of traded value on every fill, both sides. The preset is 0.03; the engine default is 0.
+- **No capital cap (owner, Oct 21, 2026).** `capital_brl` only sets the risk budget. The money in the position is not limited by it: with a 3% ATR one unit costs about R$ 17,000 and four units about R$ 67,000 against R$ 25,000. The result reports the **peak money in the position** (the largest `sum(quantity * fill price)` of the open units), and any CAGR on `capital_brl` is read next to it. The cap is a deferred rule (section 10).
+- **One position at a time, long only**, and the trade statistics treat the whole position, from its first unit to the exit, as **one trade** with the sum of its units' PnL and the number of units.
+- **Open position at the end of the data** is not a closed trade and is left out of the trade statistics, but the equity curve marks it at the last close, as IFR2 does (owner, Oct 21, 2026). The result reports how many units were open.
+- **Dividends and JCP are ignored**, raw closes, fixed capital with no compounding (section 6, rule 7).
+
+**Turtle parameters:**
+
+| Parameter | Default | Range or grid | Notes |
+| --- | --- | --- | --- |
+| `entry_period` | 20 | 1 or more | Highest-high channel length |
+| `exit_period` | 20 | 1 or more | Lowest-low channel length |
+| `atr_period` | 14 | 1 or more | Wilder ATR length |
+| `add_atr_mult` | 1.0 | above 0 | An add every this many ATR above `ref` |
+| `max_units` | 4 | 1 to 10 | 1 means no pyramiding |
+| `use_last_fill` | off | on or off | Measure the add level from the last fill instead of `avg` |
+| `capital_brl` | 25000 | > 0 | Sets the risk budget only (no cap) |
+| `risk_pct` | 2.0 | above 0 | Percent of `capital_brl` risked per unit (the script's "risk per trade") |
+| `lot_size` | 1 | 1 or more | Any whole number of shares (owner: 72, 143, ...) |
+| `fill_at` | `signal_close` | `signal_close`, `next_open` | See fills above |
+| `cost_pct` | 0.03 (preset) | 0 or more | Percent of traded value, per fill |
+
+The stop distance is fixed at one ATR, as in the script; it is not a parameter.
+
+**Worked example for the first Turtle golden test** (daily candles, `entry_period` 2, `exit_period` 2, `atr_period` 2, `add_atr_mult` 1, `max_units` 1, `capital_brl` 10,000, `risk_pct` 2 so `risk_budget` is R$ 200, `lot_size` 1, `fill_at` `signal_close`, no costs):
+
+| Bar | Open | High | Low | Close | ATR(2) | Entry level | Exit level | What happens |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | 10.00 | 10.20 | 9.90 | 10.10 | none | none | none | Warm-up |
+| 1 | 10.10 | 10.30 | 10.00 | 10.20 | none | none | none | Warm-up |
+| 2 | 10.20 | 10.40 | 10.10 | 10.30 | 0.3000 | 10.30 | 9.90 | Close equals the entry level: strict, no signal |
+| 3 | 10.30 | 10.60 | 10.25 | 10.55 | 0.3250 | 10.40 | 10.00 | Close above 10.40: buy at 10.55, quantity `floor(200 / 0.325) = 615` |
+| 4 | 10.85 | 11.20 | 10.80 | 11.10 | 0.4875 | 10.60 | 10.10 | Add level `10.55 + 0.325 = 10.875` is passed, but `max_units` is 1: nothing |
+| 5 | 11.10 | 11.30 | 11.00 | 11.20 | 0.3938 | 11.20 | 10.25 | Nothing. Stop is `10.55 - 0.4875 = 10.0625` |
+| 6 | 11.00 | 11.05 | 10.60 | 10.70 | 0.4969 | 11.30 | 10.80 | Close 10.70 is below the exit level 10.80: sell at 10.70 |
+
+Expected result: one trade, 615 shares, entry 10.55, exit 10.70, PnL `615 * 0.15 =` **+R$ 92.25**, after 3 candles in the trade, peak money in the position `615 * 10.55 = R$ 6,488.25`. (The ATR values were checked against `b3core.indicators`.)
+
+**Second worked example, pyramiding** (same candles, `max_units` 2): bar 4 passes the add level 10.875, so it adds `floor(200 / 0.4875) = 410` shares at 11.10 (sized with the current candle's ATR, not the previous one). The average price becomes `(615 * 10.55 + 410 * 11.10) / 1025 = 10.7702`. Bar 5 does not add (the limit is reached, and 11.20 is below the new level `10.7702 + 0.4875 = 11.2577`). Bar 6 sells all 1,025 shares at 10.70: PnL `615 * 0.15 + 410 * (-0.40) =` **-R$ 71.75**, 2 units, peak money in the position `615 * 10.55 + 410 * 11.10 = R$ 11,039.25`.
+
+**Turtle golden cases to write, one test each:** the worked example; the second (pyramiding) example; the close equal to the entry level; the channel excluding the current candle; warm-up bars never signal; the stop on the close, with the exit at the close and not at the stop price; `sell` and `stop` on one candle (sell wins); a candle with `sell` that would also add (no add); the add level from the average and from the last fill; a unit sized with the current ATR; a quantity below one lot skipped, counted and warned; a candle that justifies more than one add, counted and warned; `max_units` as the ceiling; no re-entry on the exit candle; costs of 0.03% on every fill; the peak money in the position; an open position at the end of the data (equity marked, not a trade); `next_open` fills, a pending order blocking new signals, and a signal on the last candle taking no trade; a non-daily timeframe running with a warning (copied from IFR2, assumption).
+
+**Turtle engine assumptions (pending the owner's sign-off):** the add on an exit candle is dropped; the whole position is one trade; the `next_open` details above; the strict comparisons as written; the order of the warm-up checks; a non-daily timeframe runs with a warning.
+
 ## 8. Testing strategy
 
 Tests drive the engine: golden cases pin exact behaviour, and property-based tests guard the invariants that backtests most often break. Write the test first in every slice.
@@ -476,6 +542,13 @@ Nothing merges to `main` unless the quality gates pass, and each phase has an ex
 - [x] IFR2 assumptions in section 7 signed off by the owner (Oct 17, 2026), including exit order target, time stop, RSI exit.
 - [ ] Owner rewrites the IFR2 subsection of section 7 in their own words.
 - [ ] IFR2 sizing after losses (found Oct 18, 2026): the quantity uses the fixed initial `capital_brl`, not the current equity, so a run that loses most of its capital keeps trading the same size and the equity curve can go below zero (VALE3, whole history, capital 10,000, risk 2,000: equity drawdown 111%). The spec does not say what happens at ruin: stop trading, size on current equity, or leave as is. The current behaviour is the fixed-capital reading; no rule has been guessed. Owner to decide.
+- [ ] Turtle (breakout with ATR pyramiding), rules from `turtle/turtle.pine` and the owner's answers of Oct 21, 2026, written as section 7c:
+  - [x] Warm-up, one add per candle, exits, the fill timing of the script (`signal_close`) and the `next_open` alternative, lot size 1, costs of 0.03% (preset), the stop read on the close: decided by the owner.
+  - [x] Both warnings: a unit skipped because its quantity is below one lot, and a candle that justified more than one add (owner, Oct 21, 2026).
+  - [ ] **Capital cap (deferred rule).** The script never checks funds, so the money in the position can far exceed `capital_brl`. The owner wants it checked in the ideal world and chose to validate the strategy first. Decide whether the cap applies to each unit or to the whole position, and what a skipped unit does to the count.
+  - [ ] Sign off the Turtle assumptions in section 7c: the add on an exit candle is dropped, the whole position is one trade, the `next_open` details, the strict comparisons, a non-daily timeframe.
+  - [ ] Owner rewrites section 7c in their own words.
+  - [ ] Turtle benchmark: the CDI, IBOV and buy-and-hold comparisons of `docs/cdi.md` and `docs/ibov.md` apply unchanged; decide how to read them next to the peak money in the position.
 - [ ] Pick the repo license and the hosting target for the demo.
 
 ## 11. Learning mode

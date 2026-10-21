@@ -1,0 +1,111 @@
+//@version=6
+strategy("Turtle Breakout + ATR Pyramiding", overlay=true,
+     initial_capital=25000,
+     pyramiding=10,                  // hard ceiling; real limit is maxUnits below
+     process_orders_on_close=true,   // thinkScript addOrder fills at close
+     max_labels_count=500,
+     commission_type=strategy.commission.percent,
+     commission_value=0.0)
+
+// ===== Inputs =====
+positionSize = input.float(25000, "Position size (account)", minval=1)
+riskAmount   = input.float(2.0,   "Risk per trade (%)",      minval=0.01)
+highValue    = input.int(20,      "Entry channel (highest high)", minval=1)
+lowValue     = input.int(20,      "Exit channel (lowest low)",    minval=1)
+atrLen       = input.int(14,      "ATR length",              minval=1)
+
+addAtrMult   = input.float(1.0,   "Add position every N ATR (1 or 2)", minval=0.1, step=0.5)
+maxUnits     = input.int(4,       "Max units (1 = no pyramiding, 10 = ceiling)", minval=1, maxval=10)
+useLastFill  = input.bool(false,  "Measure ATR step from last fill (instead of avg price)")
+
+grpLbl = "Entry labels"
+showLabels = input.bool(true,  "Show entry labels",                 group=grpLbl)
+showCost   = input.bool(true,  "Show cost of each entry (qty x price)", group=grpLbl)
+showTotal  = input.bool(false, "Show total position cost after entry",  group=grpLbl)
+labelAbove = input.bool(false, "Place labels above bar (off = below)",  group=grpLbl)
+
+grpExit = "Exit labels"
+showExits  = input.bool(true,  "Show exit labels with PnL",         group=grpExit)
+showPct    = input.bool(true,  "Show PnL % (vs avg entry price)",   group=grpExit)
+exitAbove  = input.bool(true,  "Place exit labels above bar (off = below)", group=grpExit)
+
+labelOffset = input.float(2.0, "Label offset (price units)", minval=0, group="Labels")
+
+// ===== Risk and size =====
+atrNow = ta.atr(atrLen)
+r      = positionSize * (riskAmount / 100)
+t      = math.floor(r / atrNow)
+
+// ===== Channel levels (previous bar) =====
+entryLvl = ta.highest(high, highValue)[1]
+exitLvl  = ta.lowest(low, lowValue)[1]
+
+plot(entryLvl, "Entry", color=color.green)
+plot(exitLvl,  "Exit",  color=color.red)
+
+// ===== State =====
+inLong   = strategy.position_size > 0
+units    = strategy.opentrades
+lastFill = units > 0 ? strategy.opentrades.entry_price(units - 1) : na
+refPrice = useLastFill ? lastFill : strategy.position_avg_price
+
+addLvl   = refPrice + addAtrMult * atrNow[1]
+stopLvl  = strategy.position_avg_price - atrNow[1]
+
+plot(inLong ? addLvl  : na, "Next add",  color=color.aqua,   style=plot.style_linebr)
+plot(inLong ? stopLvl : na, "Stop",      color=color.yellow, style=plot.style_linebr)
+
+// ===== Label helpers =====
+// Orders fill at this bar's close, so qty * close is the cost of the entry.
+drawEntryLabel(string tag, float qty) =>
+    if showLabels
+        float cost = qty * close
+        string txt = tag + ": " + str.tostring(qty, "#,##0")
+        if showCost
+            txt += "\nCost: " + str.tostring(cost, "#,##0.00")
+        if showTotal
+            float prior = nz(strategy.position_avg_price) * strategy.position_size
+            txt += "\nTotal: " + str.tostring(prior + cost, "#,##0.00")
+        label.new(bar_index, labelAbove ? high + labelOffset : low - labelOffset, txt,
+             style     = labelAbove ? label.style_label_down : label.style_label_up,
+             color     = tag == "ADD" ? color.new(color.aqua, 20) : color.new(color.green, 20),
+             textcolor = color.white,
+             size      = size.small)
+
+// Exit fills at this bar's close: PnL = (close - avg entry) * total qty.
+// Commissions are not included in this estimate.
+drawExitLabel(string tag) =>
+    if showExits and strategy.position_size > 0
+        float pnl = (close - strategy.position_avg_price) * strategy.position_size
+        float pct = (close / strategy.position_avg_price - 1) * 100
+        string txt = tag + ": " + (pnl >= 0 ? "+" : "") + str.tostring(pnl, "#,##0.00")
+        if showPct
+            txt += "\n" + (pct >= 0 ? "+" : "") + str.tostring(pct, "0.00") + "%"
+        label.new(bar_index, exitAbove ? high + labelOffset : low - labelOffset, txt,
+             style     = exitAbove ? label.style_label_down : label.style_label_up,
+             color     = pnl >= 0 ? color.new(color.lime, 10) : color.new(color.red, 10),
+             textcolor = pnl >= 0 ? color.black : color.white,
+             size      = size.small)
+
+// ===== Signals =====
+buySig  = close > entryLvl
+sellSig = close < exitLvl
+stopSig = inLong and close < stopLvl
+addSig  = inLong and units < maxUnits and close > addLvl
+
+// ===== Orders =====
+if buySig and not inLong and t >= 1
+    strategy.entry("BUY", strategy.long, qty=t)
+    drawEntryLabel("BUY", t)
+
+if addSig and t >= 1
+    strategy.entry("ADD" + str.tostring(units), strategy.long, qty=t)
+    drawEntryLabel("ADD", t)
+
+// One exit per bar; SELL takes priority over STOP if both trigger together
+if inLong and sellSig
+    drawExitLabel("SELL")
+    strategy.close_all(comment="SELL")
+else if stopSig
+    drawExitLabel("STOP")
+    strategy.close_all(comment="STOP")
