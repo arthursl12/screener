@@ -19,21 +19,30 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 CANDLE_COLUMNS = ("open", "high", "low", "close")
+# A chart of candles (Plotly candlestick or ohlc traces) carries the raw data in its JSON.
+CANDLE_TRACE = re.compile(r'"type"\s*:\s*"(candlestick|ohlc)"')
 
 
 def output_texts(output: dict) -> list[str]:
-    """Every text a notebook output carries: stream text, plain text and html representations."""
+    """Every text a notebook output carries: stream text and each data representation."""
     texts = []
     if output.get("output_type") == "stream":
         texts.append("".join(output.get("text", [])))
-    for key in ("text/plain", "text/html"):
-        value = output.get("data", {}).get(key)
-        if value:
-            texts.append("".join(value) if isinstance(value, list) else value)
+    for value in output.get("data", {}).values():
+        if not value:
+            continue
+        if isinstance(value, list):
+            texts.append("".join(value))
+        elif isinstance(value, str):
+            texts.append(value)
+        else:  # JSON mime types, such as a Plotly figure
+            texts.append(json.dumps(value))
     return texts
 
 
 def looks_like_candles(text: str) -> bool:
+    if CANDLE_TRACE.search(text):
+        return True
     return all(re.search(rf"(?<![\w]){column}(?![\w])", text) for column in CANDLE_COLUMNS)
 
 
@@ -46,7 +55,7 @@ def problems(path: Path) -> list[str]:
         for output in cell.get("outputs", []):
             if any(looks_like_candles(text) for text in output_texts(output)):
                 found.append(
-                    f"{path}: cell {number} prints a table with open/high/low/close columns"
+                    f"{path}: cell {number} prints raw candles (a table or a candlestick chart)"
                 )
     return found
 
