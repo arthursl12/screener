@@ -15,10 +15,16 @@ The entry level of bar 3 excludes the current candle: with its own high (10.60) 
 would not break out.
 """
 
+import warnings
+
 import pandas as pd
 import pytest
 
 from b3core.turtle import TurtleConfig, run_turtle
+
+# Longer series add several units on one candle, which warns; the tests that assert the warning
+# use pytest.warns, which is not affected by this filter.
+pytestmark = pytest.mark.filterwarnings("ignore:.*more than one add:UserWarning")
 
 Row = tuple[float, float, float, float]  # open, high, low, close
 
@@ -191,3 +197,52 @@ def test_an_exit_candle_takes_no_add() -> None:
     assert t.units == 8  # a ninth unit on the exit candle would change these three
     assert t.qty == 1894
     assert t.entry == pytest.approx(13.871277719112989)
+
+
+# Warnings and counts (owner, Oct 21, 2026).
+def test_a_unit_below_one_lot_is_skipped_counted_and_warned() -> None:
+    # risk_pct 0.001 gives a budget of R$ 0.10, so floor(0.10 / ATR) is 0 on every signal.
+    # Bars 3 and 4 both break out (closes 10.55 > 10.40 and 11.10 > 10.60): two skipped units.
+    with pytest.warns(UserWarning, match="2 .*skipped"):
+        result = run(SERIES, risk_pct=0.001)
+
+    assert result.trades == []
+    assert result.skipped_units == 2
+    assert result.open_units == 0
+
+
+def test_a_skipped_add_does_not_advance_the_unit_count() -> None:
+    # Lot 500: the entry is floor(200 / 0.325 / 500) = 1 lot = 500 shares. The add on bar 4 would
+    # be floor(200 / 0.4875 / 500) = 0 lots: skipped, the count stays at 1. Bar 5 (ATR 0.39375)
+    # is still above the level 10.55 + 0.4875 and rounds to floor(1.016) = 1 lot: added there.
+    with pytest.warns(UserWarning, match="skipped"):
+        result = run(SERIES, max_units=2, lot_size=500)
+
+    (t,) = result.trades
+    assert result.skipped_units == 1
+    assert t.units == 2
+    assert t.qty == 1000
+    assert t.entry == pytest.approx((500 * 10.55 + 500 * 11.20) / 1000)  # added on bar 5, not 4
+
+
+# Bar 4 jumps to 12.00. The add level is 10.55 + 0.325 = 10.875, so one unit is added:
+# floor(200 / 0.9375) = 213 (TR 1.55, ATR 0.9375). The new average is 10.92301 and the next level
+# 10.92301 + 0.325 = 11.248, which the same close 12.00 still passes: more than one add was due.
+JUMP: Row = (10.85, 12.10, 10.80, 12.00)
+
+
+def test_a_candle_that_justifies_more_than_one_add_is_counted_and_warned() -> None:
+    with pytest.warns(UserWarning, match="1 .*more than one add"):
+        result = run([R0, R1, R2, R3, JUMP], max_units=4)
+
+    assert result.multi_add_candles == 1
+    assert result.open_units == 2  # only one add was made on the candle
+
+
+def test_no_warning_when_one_add_was_all_that_was_due() -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = run(SERIES, max_units=2)  # the ceiling is reached: no second add is due
+
+    assert result.skipped_units == 0
+    assert result.multi_add_candles == 0

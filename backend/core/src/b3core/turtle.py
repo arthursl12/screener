@@ -4,6 +4,7 @@ Pure: no I/O, no clock.
 """
 
 import math
+import warnings
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -70,6 +71,9 @@ class TurtleResult:
     equity: NDArray[np.float64] = field(compare=False, repr=False)
     years: float | None  # length of the data in years; None below two candles apart in time
     peak_cost: float  # the most money the open units ever held (quantity times fill price)
+    skipped_units: int  # signals whose quantity was below one lot or whose ATR was zero
+    multi_add_candles: int  # candles that justified more than one add (only one is made)
+    open_units: int  # units still open on the last candle
 
     @property
     def metrics(self) -> Metrics:
@@ -114,6 +118,8 @@ def run_turtle(candles: pd.DataFrame, config: TurtleConfig) -> TurtleResult:
     equity = np.empty(len(close))
     realized = 0.0
     peak_cost = 0.0
+    skipped_units = 0
+    multi_add_candles = 0
     units: list[tuple[int, float]] = []  # (quantity, fill price)
     entry_bar = 0
 
@@ -151,11 +157,25 @@ def run_turtle(candles: pd.DataFrame, config: TurtleConfig) -> TurtleResult:
                     size = _quantity(float(atr_values[t]), config)  # the current ATR
                     if size > 0:
                         units.append((size, float(close[t])))
+                        # Would the same close still pass the next level? Then more than one
+                        # add was due; only one is made per candle.
+                        qty = sum(q for q, _ in units)
+                        average = sum(q * p for q, p in units) / qty
+                        reference = units[-1][1] if config.use_last_fill else average
+                        if (
+                            len(units) < config.max_units
+                            and close[t] > reference + config.add_atr_mult * previous_atr
+                        ):
+                            multi_add_candles += 1
+                    else:
+                        skipped_units += 1
         elif close[t] > entry_level[t]:  # False while the level is NaN
             size = _quantity(float(atr_values[t]), config)
             if size > 0:
                 units = [(size, float(close[t]))]
                 entry_bar = t
+            elif math.isfinite(atr_values[t]):  # a missing ATR is warm-up, not a skipped signal
+                skipped_units += 1
 
         floating = sum(q * (close[t] - p) for q, p in units)
         peak_cost = max(peak_cost, sum(q * p for q, p in units))
@@ -163,6 +183,24 @@ def run_turtle(candles: pd.DataFrame, config: TurtleConfig) -> TurtleResult:
 
     span_days = (ts.iloc[-1] - ts.iloc[0]).days if len(ts) > 1 else 0
     years = span_days / 365.25 if span_days > 0 else None
+    if skipped_units:
+        warnings.warn(
+            f"{skipped_units} Turtle unit(s) skipped: the quantity was below one lot "
+            "or the ATR was zero",
+            stacklevel=2,
+        )
+    if multi_add_candles:
+        warnings.warn(
+            f"{multi_add_candles} candle(s) justified more than one add; only one was made",
+            stacklevel=2,
+        )
     return TurtleResult(
-        config=config, trades=trades, equity=equity, years=years, peak_cost=peak_cost
+        config=config,
+        trades=trades,
+        equity=equity,
+        years=years,
+        peak_cost=peak_cost,
+        skipped_units=skipped_units,
+        multi_add_candles=multi_add_candles,
+        open_units=len(units),
     )
