@@ -12,8 +12,13 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
+from b3core.data import Timeframe
 from b3core.indicators import atr
 from b3core.metrics import Metrics, compute_metrics
+
+# B3 fee per side in percent of traded value (brief section 10). The engine default is 0 so
+# golden tests stay readable; the preset uses this value.
+TURTLE_COST_PCT = 0.03
 
 # Guards float noise in floor(): 92.99999999999999 must count as 93.
 _EPS = 1e-9
@@ -32,6 +37,32 @@ class TurtleConfig:
     capital_brl: float = 25_000.0  # sets the risk budget only: there is no capital cap
     risk_pct: float = 2.0
     lot_size: int = 1
+    cost_pct: float = 0.0  # percent of traded value, on every fill
+
+    def __post_init__(self) -> None:
+        if self.entry_period < 1:
+            raise ValueError("entry_period must be at least 1")
+        if self.exit_period < 1:
+            raise ValueError("exit_period must be at least 1")
+        if self.atr_period < 1:
+            raise ValueError("atr_period must be at least 1")
+        if self.add_atr_mult <= 0:
+            raise ValueError("add_atr_mult must be above 0")
+        if not 1 <= self.max_units <= 10:
+            raise ValueError("max_units must be between 1 and 10")
+        if self.capital_brl <= 0:
+            raise ValueError("capital_brl must be positive")
+        if self.risk_pct <= 0:
+            raise ValueError("risk_pct must be above 0")
+        if self.lot_size < 1:
+            raise ValueError("lot_size must be at least 1")
+        if self.cost_pct < 0:
+            raise ValueError("cost_pct must be 0 or more")
+
+    @classmethod
+    def preset(cls, **overrides: Any) -> "TurtleConfig":
+        """The Turtle preset: defaults plus the B3 fee of 0.03% per side."""
+        return cls(**{"cost_pct": TURTLE_COST_PCT, **overrides})
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -103,8 +134,21 @@ def _quantity(atr_value: float, config: TurtleConfig) -> int:
     return max(math.floor(config.risk_budget / atr_value / lot + _EPS), 0) * lot
 
 
-def run_turtle(candles: pd.DataFrame, config: TurtleConfig) -> TurtleResult:
-    """Simulate Turtle de compra on closed daily candles, filling at the signal close."""
+def run_turtle(
+    candles: pd.DataFrame,
+    config: TurtleConfig,
+    *,
+    timeframe: Timeframe = Timeframe.D1,
+) -> TurtleResult:
+    """Simulate Turtle de compra on closed daily candles, filling at the signal close.
+
+    Other timeframes run (every rule counts candles) but warn: the spec is daily.
+    """
+    if timeframe is not Timeframe.D1:
+        warnings.warn(
+            f"Turtle is specified for daily candles; {timeframe.value} is outside the spec",
+            stacklevel=2,
+        )
     high = candles["high"].to_numpy(dtype=np.float64)
     low = candles["low"].to_numpy(dtype=np.float64)
     close = candles["close"].to_numpy(dtype=np.float64)
@@ -114,6 +158,7 @@ def run_turtle(candles: pd.DataFrame, config: TurtleConfig) -> TurtleResult:
     entry_level = _channel(high, config.entry_period, use_max=True)
     exit_level = _channel(low, config.exit_period, use_max=False)
 
+    cost_rate = config.cost_pct / 100.0
     trades: list[TurtleTrade] = []
     equity = np.empty(len(close))
     realized = 0.0
@@ -131,7 +176,9 @@ def run_turtle(candles: pd.DataFrame, config: TurtleConfig) -> TurtleResult:
             sell = close[t] < exit_level[t]  # False while the level is NaN
             stop = close[t] < average - previous_atr  # False while the ATR is NaN
             if sell or stop:  # a sell wins over a stop on the same candle
-                pnl = sum(q * (float(close[t]) - p) for q, p in units)
+                pnl = sum(q * (float(close[t]) - p) for q, p in units) - cost_rate * (
+                    sum(q * p for q, p in units) + qty * float(close[t])
+                )
                 trades.append(
                     TurtleTrade(
                         n=len(trades) + 1,
@@ -177,7 +224,9 @@ def run_turtle(candles: pd.DataFrame, config: TurtleConfig) -> TurtleResult:
             elif math.isfinite(atr_values[t]):  # a missing ATR is warm-up, not a skipped signal
                 skipped_units += 1
 
-        floating = sum(q * (close[t] - p) for q, p in units)
+        floating = sum(q * (close[t] - p) for q, p in units) - cost_rate * sum(
+            q * p for q, p in units
+        )
         peak_cost = max(peak_cost, sum(q * p for q, p in units))
         equity[t] = config.capital_brl + realized + floating
 

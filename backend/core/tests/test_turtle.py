@@ -20,6 +20,7 @@ import warnings
 import pandas as pd
 import pytest
 
+from b3core.data import Timeframe
 from b3core.turtle import TurtleConfig, run_turtle
 
 # Longer series add several units on one candle, which warns; the tests that assert the warning
@@ -246,3 +247,92 @@ def test_no_warning_when_one_add_was_all_that_was_due() -> None:
 
     assert result.skipped_units == 0
     assert result.multi_add_candles == 0
+
+
+# Costs: cost_pct percent of the traded value on every fill, both sides.
+def test_costs_apply_to_every_fill() -> None:
+    (single,) = run(SERIES, cost_pct=0.03).trades
+    (pyramid,) = run(SERIES, max_units=2, cost_pct=0.03).trades
+
+    assert single.pnl == pytest.approx(92.25 - 0.0003 * 615 * (10.55 + 10.70))  # 88.329375
+    traded = 615 * 10.55 + 410 * 11.10 + 1025 * 10.70
+    assert pyramid.pnl == pytest.approx(-71.75 - 0.0003 * traded)
+
+
+def test_the_preset_carries_the_b3_fee() -> None:
+    assert TurtleConfig.preset().cost_pct == 0.03
+    assert TurtleConfig().cost_pct == 0.0
+
+
+# Equity: capital plus closed PnL plus the open units marked at the close.
+def test_equity_marks_the_open_units_at_each_close() -> None:
+    equity = run(SERIES).equity
+
+    assert list(equity[:4]) == pytest.approx([10_000.0] * 4)  # flat, then the buy at the close
+    assert equity[4] == pytest.approx(10_000 + 615 * (11.10 - 10.55))
+    assert equity[5] == pytest.approx(10_000 + 615 * (11.20 - 10.55))
+    assert equity[6] == pytest.approx(10_000 + 92.25)  # closed at the exit
+
+
+def test_the_entry_cost_is_in_the_equity_of_the_entry_candle() -> None:
+    equity = run(SERIES, cost_pct=0.03).equity
+
+    assert equity[3] == pytest.approx(10_000 - 0.0003 * 615 * 10.55)
+
+
+def test_an_open_position_at_the_end_is_not_a_trade_but_is_in_the_equity() -> None:
+    result = run(SERIES[:5])  # bought on bar 3, still open after bar 4
+
+    assert result.trades == []
+    assert result.open_units == 1
+    assert result.equity[-1] == pytest.approx(10_000 + 615 * 0.55)
+    assert result.metrics.n_trades == 0
+
+
+# Warm-up. With atr_period 3 the first ATR is on bar 3. Bars 1 and 2 close above the previous
+# high, but there is no ATR yet: no signal, and not a skipped unit. Bar 3 is the first entry.
+WARM_UP = [
+    (10.00, 10.20, 9.90, 10.10),
+    (10.10, 10.30, 10.00, 10.25),
+    (10.25, 10.40, 10.20, 10.35),
+    (10.35, 10.50, 10.30, 10.45),
+    (10.40, 10.45, 10.00, 10.05),
+]
+
+
+def test_warm_up_candles_never_signal() -> None:
+    result = run(WARM_UP, entry_period=1, exit_period=1, atr_period=3)
+
+    (t,) = result.trades
+    assert (t.entry_index, t.exit_index) == (3, 4)
+    assert t.qty == 857  # floor(200 / 0.23333)
+    assert result.skipped_units == 0
+
+
+def test_a_non_daily_timeframe_runs_with_a_warning() -> None:
+    with pytest.warns(UserWarning, match="outside the spec"):
+        run_turtle(candles(SERIES), config(), timeframe=Timeframe.H2)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"entry_period": 0},
+        {"exit_period": 0},
+        {"atr_period": 0},
+        {"add_atr_mult": 0},
+        {"max_units": 0},
+        {"max_units": 11},
+        {"capital_brl": 0},
+        {"risk_pct": 0},
+        {"lot_size": 0},
+        {"cost_pct": -0.01},
+    ],
+)
+def test_invalid_parameters_are_refused(overrides: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        config(**overrides)
+
+
+def test_the_config_round_trips_through_a_dict() -> None:
+    assert TurtleConfig.from_dict(config().to_dict()) == config()
