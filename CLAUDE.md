@@ -4,7 +4,7 @@ Notebook-first backtester for B3 instruments (stocks, BDRs, ETFs, indices) with 
 
 Read `docs/brief.md` before starting any phase or task. It is the source of truth for architecture, trading rules (sections 6 and 7), the optimizer (section 12) and the roadmap (section 10).
 
-**Current phase: Phase 0, barebones MVP.** Notebook, candles from CSV files and yfinance, no Docker, no database, no CI. Update this line when a phase ends.
+**Current phase: Phase 0, barebones MVP. On hold since Oct 22, 2026:** no strategy tested beat the CDI out-of-sample (see `README.md`), so the owner paused the project. Notebook, candles from CSV files and yfinance, no Docker, no database, no CI. Update this line when a phase ends or work resumes.
 
 ## Learning mode (applies to every task)
 
