@@ -9,6 +9,7 @@ dependencies = ["b3core", "b3report"]
 dev = [
     "hypothesis",
     "jupyterlab",
+    "kaleido>=1.5.0",
     "mypy",
     "nbstripout",
     "pandas-stubs>=3.0.5.260914",
