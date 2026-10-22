@@ -60,7 +60,7 @@ make lint                            # ruff, mypy and the notebook output guard
 make notebook                        # JupyterLab on notebooks/
 ```
 
-The notebooks download daily candles from Yahoo Finance and the CDI from the Central Bank (`samples/` is a gitignored cache; **the data itself is never committed**). The 123 de compra notebook reads MT5 "export bars" CSV files that you place in `samples/` yourself. The Plotly charts are interactive in JupyterLab or in an HTML export (`jupyter nbconvert --to html`); GitHub does not render them.
+The notebooks download daily candles from Yahoo Finance and the CDI from the Central Bank (`samples/` is a gitignored cache; **the data itself is never committed**). The 123 de compra notebook reads MT5 "export bars" CSV files that you place in `samples/` yourself. The Plotly charts are interactive in JupyterLab or in an HTML export (`jupyter nbconvert --to html`). GitHub cannot run them, so `turtle_deep_dive.ipynb` also stores a still image of each chart, made with `kaleido` (the dropdown's image shows its first ticker). `kaleido` drives a headless Chrome, which it downloads itself (`kaleido.get_chrome_sync()`); on a minimal Linux or WSL install Chrome also needs `libnss3`, `libnspr4` and `libasound2` (`sudo apt install libnss3 libnspr4 libasound2t64`). Without `kaleido` the notebook still runs, with interactive charts only.
 
 ## Notebooks
 
