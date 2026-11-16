@@ -111,43 +111,74 @@ def intraday_exposure(
     return _hold_and_delay(decided, exit_minute)
 
 
-def vwap_stop_exposure(
+def _decide(stop: str, position: float, c: float, ub: float, lb: float, vw: float) -> float:
+    """The position after a decision bar, for each way of exiting (see `STOPS`)."""
+    if stop == "vwap_band":
+        return 1.0 if (c > ub and c > vw) else -1.0 if (c < lb and c < vw) else 0.0
+    if stop == "current_band":
+        return 1.0 if c > ub else -1.0 if c < lb else 0.0
+    if stop == "opposite_band":
+        return 1.0 if c > ub else -1.0 if c < lb else position
+    # vwap_only: leave when the close is no longer on the position's side of the VWAP, then enter
+    if (position > 0 and not c > vw) or (position < 0 and not c < vw):
+        position = 0.0
+    if position == 0.0:
+        return 1.0 if c > ub else -1.0 if c < lb else 0.0
+    return position
+
+
+def _stopped(stop: str, position: float, c: float, ub: float, lb: float, vw: float) -> bool:
+    """Whether a position held at a bar's close fails its stop (a missing value counts as a fail,
+    except for the opposite band, which needs a real cross)."""
+    if stop == "vwap_band":
+        return not (c > ub and c > vw) if position > 0 else not (c < lb and c < vw)
+    if stop == "current_band":
+        return not c > ub if position > 0 else not c < lb
+    if stop == "opposite_band":
+        return c < lb if position > 0 else c > ub
+    return not c > vw if position > 0 else not c < vw
+
+
+def bar_by_bar_exposure(
     close: pd.Series,
     bands: pd.DataFrame,
     vwap: pd.Series,
     *,
+    stop: str,
+    every_bar: bool,
     session_open: int,
     trade_freq: int,
     first_decision: int,
     exit_minute: int,
 ) -> pd.Series:
-    """The paper's VWAP-only trailing stop (its FAQ Q22), read as a state machine per day.
+    """The position held during each bar, built bar by bar (a state machine per day).
 
-    At each decision a long stays only while the close is above the VWAP and a short only while
-    it is below; a position that fails that is closed. A flat account then enters long above the
-    upper band or short below the lower band, so a position can reverse at one decision.
+    Positions are opened or changed only on the decision bars. With `every_bar` False a position
+    is also left only there, as in the paper ("stop losses can also be triggered only on
+    semi-hourly intervals"). With `every_bar` True it is closed at the close of the first bar,
+    decision bar or not, that fails the stop, and the next entry waits for the next decision.
+    Needed for the VWAP-only stop, which depends on the position held, and for `every_bar`.
     """
     index = pd.DatetimeIndex(close.index)
     is_decision = _decision_mask(index, session_open, trade_freq, first_decision)
     day = index.normalize().to_numpy()
     prices, upper, lower = close.to_numpy(), bands["ub"].to_numpy(), bands["lb"].to_numpy()
     average = vwap.to_numpy()
-    decided = np.full(len(index), np.nan)
+    positions = np.zeros(len(index))
     position, current_day = 0.0, None
-    for i in np.flatnonzero(is_decision):
+    for i in range(len(index)):
         if day[i] != current_day:
             position, current_day = 0.0, day[i]
-        if (position > 0 and not prices[i] > average[i]) or (
-            position < 0 and not prices[i] < average[i]
+        if is_decision[i]:
+            position = _decide(stop, position, prices[i], upper[i], lower[i], average[i])
+        elif (
+            every_bar
+            and position != 0.0
+            and _stopped(stop, position, prices[i], upper[i], lower[i], average[i])
         ):
             position = 0.0
-        if position == 0.0:
-            if prices[i] > upper[i]:
-                position = 1.0
-            elif prices[i] < lower[i]:
-                position = -1.0
-        decided[i] = position
-    return _hold_and_delay(pd.Series(decided, index=close.index), exit_minute)
+        positions[i] = position
+    return _hold_and_delay(pd.Series(positions, index=close.index), exit_minute)
 
 
 # vwap_band is the paper's final model (and the authors' notebook); the others are its earlier
@@ -155,6 +186,9 @@ def vwap_stop_exposure(
 # until the opposite band, current_band is flat once the price is back inside the band, vwap_only
 # leaves when the price crosses the VWAP.
 STOPS = ("vwap_band", "opposite_band", "current_band", "vwap_only")
+# grid: a stop is only acted on at the half-hour decisions (the paper, and both codes);
+# every_bar: a stop is acted on at the close of the first bar that fails it (an alternative)
+STOP_CHECKS = ("grid", "every_bar")
 
 
 @dataclass(frozen=True)
@@ -168,7 +202,9 @@ class IntradayConfig:
     WIN mini contract (R$ 1,000, the owner's figure; 0 switches the limit off): the contracts are
     capped at what the equity can margin, which the default R$ 100,000 account never reaches.
     `stop` picks the exit rule (see `STOPS`), `sides` trades only the long or the short leg, and
-    `leverage` replaces the volatility target by a constant leverage (1 is the paper's '100%')."""
+    `leverage` replaces the volatility target by a constant leverage (1 is the paper's '100%').
+    `stop_check` is when a stop is acted on: `grid` at the half-hour decisions (the paper's rule
+    and the default), `every_bar` at the first bar close that fails it (an alternative)."""
 
     lookback: int = 14
     min_days: int = 13
@@ -187,8 +223,11 @@ class IntradayConfig:
     stop: str = "vwap_band"
     sides: str = "both"
     leverage: float | None = None
+    stop_check: str = "grid"
 
     def __post_init__(self) -> None:
+        if self.stop_check not in STOP_CHECKS:
+            raise ValueError(f"stop_check must be one of {STOP_CHECKS}, got {self.stop_check!r}")
         if self.stop not in STOPS:
             raise ValueError(f"stop must be one of {STOPS}, got {self.stop!r}")
         if self.sides not in ("both", "long", "short"):
@@ -242,22 +281,24 @@ def _sigma_and_exposure(bars: pd.DataFrame, config: IntradayConfig) -> tuple[pd.
             hold_zero=hold_zero,
         )
 
-    if config.stop == "vwap_band":
-        exposure = expose(breakout_signal(bars["close"], bands, vwap))
-    elif config.stop == "current_band":
-        exposure = expose(band_signal(bars["close"], bands))
-    elif config.stop == "opposite_band":
-        exposure = expose(band_signal(bars["close"], bands), hold_zero=True)
-    else:
-        exposure = vwap_stop_exposure(
+    if config.stop == "vwap_only" or config.stop_check == "every_bar":
+        exposure = bar_by_bar_exposure(
             bars["close"],
             bands,
             vwap,
+            stop=config.stop,
+            every_bar=config.stop_check == "every_bar",
             session_open=config.session_open,
             trade_freq=config.trade_freq,
             first_decision=config.first_decision,
             exit_minute=config.exit_minute,
         )
+    elif config.stop == "vwap_band":
+        exposure = expose(breakout_signal(bars["close"], bands, vwap))
+    elif config.stop == "current_band":
+        exposure = expose(band_signal(bars["close"], bands))
+    else:
+        exposure = expose(band_signal(bars["close"], bands), hold_zero=True)
     if config.sides == "long":
         exposure = exposure.clip(lower=0.0)
     elif config.sides == "short":

@@ -132,6 +132,65 @@ def test_an_unknown_stop_is_refused() -> None:
         IntradayConfig(stop="trailing")
 
 
+# --- when the stop is checked ------------------------------------------------------------------
+
+
+def test_the_stop_is_checked_on_the_half_hour_by_default_as_in_the_paper() -> None:
+    assert IntradayConfig().stop_check == "grid"
+    bars = two_days({29: 103.0, 40: 101.0})  # long on 103, back inside the band at 09:40
+
+    assert held(exposure_of(bars, stop="vwap_band")) == ["09:30", "09:59"]
+    assert held(exposure_of(bars, stop="current_band")) == ["09:30", "09:59"]
+
+
+def test_checked_on_every_bar_the_final_model_leaves_as_soon_as_the_close_fails_the_stop() -> None:
+    bars = two_days({29: 103.0, 40: 101.0})
+
+    # held through the 09:40 bar, which closes at 101: out at that close, not at 10:00
+    assert held(exposure_of(bars, stop="vwap_band", stop_check="every_bar")) == ["09:30", "09:40"]
+
+
+def test_checked_on_every_bar_the_current_band_stop_leaves_when_back_inside_the_band() -> None:
+    bars = two_days({29: 103.0, 40: 101.0})
+
+    every_bar = exposure_of(bars, stop="current_band", stop_check="every_bar")
+
+    assert held(every_bar) == ["09:30", "09:40"]
+
+
+def test_checked_on_every_bar_the_opposite_band_leaves_on_the_cross_then_reverses() -> None:
+    bars = two_days({29: 103.0, 40: 98.0})  # below the lower band (99) from 09:40
+
+    grid = exposure_of(bars, stop="opposite_band").loc["2024-01-03"]
+    every = exposure_of(bars, stop="opposite_band", stop_check="every_bar").loc["2024-01-03"]
+
+    assert (grid.iloc[30:60] == 1.0).all() and (grid.iloc[60:] == -1.0).all()
+    assert (every.iloc[30:41] == 1.0).all()  # long through the 09:40 bar
+    assert (every.iloc[41:60] == 0.0).all()  # flat until the next decision
+    assert (every.iloc[60:] == -1.0).all()  # the reversal still waits for 09:59
+
+
+def test_checked_on_every_bar_the_vwap_only_stop_leaves_when_the_price_crosses_the_vwap() -> None:
+    # long on 103; above the VWAP at 09:59 (102 over 101.5), below it at 10:10 (100 under 101.6)
+    bars = two_days({29: 103.0, 59: 102.0, 70: 100.0})
+
+    assert held(exposure_of(bars, stop="vwap_only")) == ["09:30", "10:29"]
+    assert held(exposure_of(bars, stop="vwap_only", stop_check="every_bar")) == ["09:30", "10:10"]
+
+
+def test_entries_stay_on_the_half_hour_even_when_the_stop_is_checked_on_every_bar() -> None:
+    bars = two_days({35: 103.0})  # breaks out at 09:35, which is not a decision bar
+
+    for stop_check in ("grid", "every_bar"):
+        exposure = exposure_of(bars, stop="vwap_band", stop_check=stop_check)
+        assert held(exposure) == ["10:00", "10:59"]
+
+
+def test_an_unknown_stop_check_is_refused() -> None:
+    with pytest.raises(ValueError, match="stop_check"):
+        IntradayConfig(stop_check="always")
+
+
 # --- long and short legs, leverage ---------------------------------------------------------------
 
 
