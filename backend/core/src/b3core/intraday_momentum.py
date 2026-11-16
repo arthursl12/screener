@@ -59,6 +59,30 @@ def breakout_signal(close: pd.Series, bands: pd.DataFrame, vwap: pd.Series) -> p
     return long.astype("int64") - short.astype("int64")
 
 
+def band_signal(close: pd.Series, bands: pd.DataFrame) -> pd.Series:
+    """+1 above the upper band, -1 below the lower band, else 0 (strict, no VWAP)."""
+    return (close > bands["ub"]).astype("int64") - (close < bands["lb"]).astype("int64")
+
+
+def _decision_mask(
+    index: pd.DatetimeIndex, session_open: int, trade_freq: int, first_decision: int
+) -> np.ndarray:
+    minute = np.asarray(index.hour * 60 + index.minute)
+    on_grid = (minute - session_open + 1) % trade_freq == 0
+    return np.asarray(on_grid & (minute + 1 >= first_decision))
+
+
+def _hold_and_delay(decided: pd.Series, exit_minute: int) -> pd.Series:
+    """From the position decided on some bars (NaN elsewhere): hold it within the day, start it
+    on the next bar, and keep nothing from `exit_minute` on."""
+    index = pd.DatetimeIndex(decided.index)
+    day = index.normalize()
+    minute = index.hour * 60 + index.minute
+    current = decided.groupby(day).ffill().fillna(0.0)
+    started = current.groupby(day).shift(1).fillna(0.0)
+    return started.where(minute < exit_minute, 0.0)
+
+
 def intraday_exposure(
     signal: pd.Series,
     *,
@@ -66,26 +90,71 @@ def intraday_exposure(
     trade_freq: int,
     first_decision: int,
     exit_minute: int,
+    hold_zero: bool = False,
 ) -> pd.Series:
     """The position (-1, 0 or +1) held during each bar, flat at each day's start and end.
 
     A decision is taken on the bars that close `trade_freq` minutes apart counting from the
     session open (the 09:29 and 09:59 bars for a 09:00 open and 30 minutes), and only when the
     bar closes at or after `first_decision`. The position stays at the last decision until the
-    next one, and a decision of 0 goes flat. It starts on the next bar, so the price it earns
-    from is the close of the decision bar. Nothing is held in the bars from `exit_minute` on.
-    All times are minutes since midnight; `exit_minute` is the label of the first bar that is
-    flat, so an exit at 17:30 is at the close of the 17:29 bar.
+    next one, and a decision of 0 goes flat, unless `hold_zero` is set: then a 0 changes nothing
+    and a position is kept until the opposite signal or the end of the day. It starts on the next
+    bar, so the price it earns from is the close of the decision bar. Nothing is held in the bars
+    from `exit_minute` on. All times are minutes since midnight; `exit_minute` is the label of
+    the first bar that is flat, so an exit at 17:30 is at the close of the 17:29 bar.
     """
     index = pd.DatetimeIndex(signal.index)
-    minute = index.hour * 60 + index.minute
-    day = index.normalize()
-    is_decision = ((minute - session_open + 1) % trade_freq == 0) & (minute + 1 >= first_decision)
-
+    is_decision = _decision_mask(index, session_open, trade_freq, first_decision)
     decided = signal.astype("float64").where(is_decision)
-    current = decided.groupby(day).ffill().fillna(0.0)
-    started = current.groupby(day).shift(1).fillna(0.0)
-    return started.where(minute < exit_minute, 0.0)
+    if hold_zero:
+        decided = decided.where(decided != 0)
+    return _hold_and_delay(decided, exit_minute)
+
+
+def vwap_stop_exposure(
+    close: pd.Series,
+    bands: pd.DataFrame,
+    vwap: pd.Series,
+    *,
+    session_open: int,
+    trade_freq: int,
+    first_decision: int,
+    exit_minute: int,
+) -> pd.Series:
+    """The paper's VWAP-only trailing stop (its FAQ Q22), read as a state machine per day.
+
+    At each decision a long stays only while the close is above the VWAP and a short only while
+    it is below; a position that fails that is closed. A flat account then enters long above the
+    upper band or short below the lower band, so a position can reverse at one decision.
+    """
+    index = pd.DatetimeIndex(close.index)
+    is_decision = _decision_mask(index, session_open, trade_freq, first_decision)
+    day = index.normalize().to_numpy()
+    prices, upper, lower = close.to_numpy(), bands["ub"].to_numpy(), bands["lb"].to_numpy()
+    average = vwap.to_numpy()
+    decided = np.full(len(index), np.nan)
+    position, current_day = 0.0, None
+    for i in np.flatnonzero(is_decision):
+        if day[i] != current_day:
+            position, current_day = 0.0, day[i]
+        if (position > 0 and not prices[i] > average[i]) or (
+            position < 0 and not prices[i] < average[i]
+        ):
+            position = 0.0
+        if position == 0.0:
+            if prices[i] > upper[i]:
+                position = 1.0
+            elif prices[i] < lower[i]:
+                position = -1.0
+        decided[i] = position
+    return _hold_and_delay(pd.Series(decided, index=close.index), exit_minute)
+
+
+# vwap_band is the paper's final model (and the authors' notebook); the others are its earlier
+# stages and FAQ Q22, read from the text (brief section 10): opposite_band holds the last breakout
+# until the opposite band, current_band is flat once the price is back inside the band, vwap_only
+# leaves when the price crosses the VWAP.
+STOPS = ("vwap_band", "opposite_band", "current_band", "vwap_only")
 
 
 @dataclass(frozen=True)
@@ -97,7 +166,9 @@ class IntradayConfig:
     wants searched. `fixed_contracts` trades that many contracts every day instead of the volatility
     target (1 is the single-contract version). `margin_per_contract` is what the broker asks for a
     WIN mini contract (R$ 1,000, the owner's figure; 0 switches the limit off): the contracts are
-    capped at what the equity can margin, which the default R$ 100,000 account never reaches."""
+    capped at what the equity can margin, which the default R$ 100,000 account never reaches.
+    `stop` picks the exit rule (see `STOPS`), `sides` trades only the long or the short leg, and
+    `leverage` replaces the volatility target by a constant leverage (1 is the paper's '100%')."""
 
     lookback: int = 14
     min_days: int = 13
@@ -113,6 +184,15 @@ class IntradayConfig:
     fee_per_side: float = 0.25
     fixed_contracts: int | None = None
     margin_per_contract: float = 1_000.0
+    stop: str = "vwap_band"
+    sides: str = "both"
+    leverage: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.stop not in STOPS:
+            raise ValueError(f"stop must be one of {STOPS}, got {self.stop!r}")
+        if self.sides not in ("both", "long", "short"):
+            raise ValueError(f"sides must be both, long or short, got {self.sides!r}")
 
 
 def daily_volatility(daily_close: pd.Series, days: int = 14) -> pd.Series:
@@ -135,7 +215,9 @@ def contracts_for(aum: float, open_price: float, volatility: float, config: Intr
     if config.fixed_contracts is not None:
         wanted = config.fixed_contracts
     else:
-        if math.isnan(volatility) or volatility <= 0:
+        if config.leverage is not None:
+            leverage = config.leverage
+        elif math.isnan(volatility) or volatility <= 0:
             leverage = config.max_leverage
         else:
             leverage = min(config.target_vol / volatility, config.max_leverage)
@@ -148,14 +230,38 @@ def contracts_for(aum: float, open_price: float, volatility: float, config: Intr
 def _sigma_and_exposure(bars: pd.DataFrame, config: IntradayConfig) -> tuple[pd.Series, pd.Series]:
     sigma = noise_sigma(bars[["open", "close"]], config.lookback, config.min_days)
     bands = noise_bands(bars, sigma, config.band_mult)
-    signal = breakout_signal(bars["close"], bands, session_vwap(bars))
-    exposure = intraday_exposure(
-        signal,
-        session_open=config.session_open,
-        trade_freq=config.trade_freq,
-        first_decision=config.first_decision,
-        exit_minute=config.exit_minute,
-    )
+    vwap = session_vwap(bars)
+
+    def expose(signal: pd.Series, hold_zero: bool = False) -> pd.Series:
+        return intraday_exposure(
+            signal,
+            session_open=config.session_open,
+            trade_freq=config.trade_freq,
+            first_decision=config.first_decision,
+            exit_minute=config.exit_minute,
+            hold_zero=hold_zero,
+        )
+
+    if config.stop == "vwap_band":
+        exposure = expose(breakout_signal(bars["close"], bands, vwap))
+    elif config.stop == "current_band":
+        exposure = expose(band_signal(bars["close"], bands))
+    elif config.stop == "opposite_band":
+        exposure = expose(band_signal(bars["close"], bands), hold_zero=True)
+    else:
+        exposure = vwap_stop_exposure(
+            bars["close"],
+            bands,
+            vwap,
+            session_open=config.session_open,
+            trade_freq=config.trade_freq,
+            first_decision=config.first_decision,
+            exit_minute=config.exit_minute,
+        )
+    if config.sides == "long":
+        exposure = exposure.clip(lower=0.0)
+    elif config.sides == "short":
+        exposure = exposure.clip(upper=0.0)
     return sigma, exposure
 
 
@@ -288,3 +394,74 @@ def drawdown_summary(result: pd.DataFrame, curve: pd.DataFrame, capital: float) 
         "worst_day": float(max(0.0, -result["net"].min())),
         "worst_intraday_loss": float(max(0.0, day_drop.max())),
     }
+
+
+def trade_list(bars: pd.DataFrame, config: IntradayConfig, result: pd.DataFrame) -> pd.DataFrame:
+    """One row per trade: a run of the same position inside a day.
+
+    It is entered at the close of the decision bar (`entry_time` is that close) and left at the
+    close of the last bar held (`exit_time`), which is the end of the day or the bar before a
+    change of position. A reversal is two trades at the same price. `points` are per contract,
+    `ret` is points over the entry price, and `gross`, `cost` (both sides) and `net` are in
+    reais on the day's contracts, so the net of a day's trades adds up to the day's `net`.
+    """
+    exposure = strategy_exposure(bars, config).to_numpy(dtype=np.float64)
+    close = bars["close"].to_numpy(dtype=np.float64)
+    day = pd.DatetimeIndex(bars.index).normalize()
+    one_minute = pd.Timedelta(minutes=1)
+    contracts_by_day = result["contracts"].to_dict()
+    rows = []
+    for current, where in bars.groupby(day).indices.items():
+        size = int(contracts_by_day[current])
+        held = exposure[where]
+        if size == 0 or not held.any():
+            continue
+        stamps = bars.index[where]
+        prices = close[where]
+        start = 0
+        while start < len(held):
+            if held[start] == 0:
+                start += 1
+                continue
+            side = held[start]
+            stop = start
+            while stop + 1 < len(held) and held[stop + 1] == side:
+                stop += 1
+            entry, leave = prices[start - 1], prices[stop]
+            points = side * (leave - entry)
+            gross = points * size * config.point_value
+            cost = 2 * size * config.fee_per_side
+            rows.append(
+                (
+                    current,
+                    int(side),
+                    stamps[start - 1] + one_minute,
+                    stamps[stop] + one_minute,
+                    entry,
+                    leave,
+                    points,
+                    points / entry,
+                    size,
+                    gross,
+                    cost,
+                    gross - cost,
+                )
+            )
+            start = stop + 1
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "day",
+            "side",
+            "entry_time",
+            "exit_time",
+            "entry_price",
+            "exit_price",
+            "points",
+            "ret",
+            "contracts",
+            "gross",
+            "cost",
+            "net",
+        ],
+    )
