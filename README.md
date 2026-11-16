@@ -10,6 +10,8 @@ A notebook-first backtester for B3 stocks and BDRs, built to answer one question
 
 The engineering is complete for what it set out to do, and the negative result is the result. The details are below.
 
+> **Needs further investigation (Nov 2026).** A small proof of concept on the branch `feat/momentum-tilt` (not merged) tests a different idea from the three strategies above: a monthly momentum tilt on the 20 most liquid stocks, inspired by a public Romanian index. Its first run, with settings fixed in advance, **failed the pass rule that was written before the run**. It beat the CDI, as plain equal-weight did on the same survivor list, but its edge over equal-weight was not distinguishable from noise (monthly t-statistic 0.28) and it lost in the first half of the window. It is a single run on 14 years of survivors, so it neither confirms nor rules out momentum on B3, and the project stays on hold. Open questions: other lookbacks and universes, each with its own pass rule written first, and whether anything beyond plain momentum is worth a model. See `docs/brief.md` section 10 and `notebooks/momentum_tilt.ipynb` on that branch.
+
 ## What the backtests found
 
 All numbers come from the notebooks in `notebooks/` (published with outputs). "Out-of-sample" means the last 30% of the history, from May 2022. The CDI ran at roughly 13% a year in that window and the IBOV at about 15%. Prices are raw Yahoo Finance closes, with the 0.03% B3 fee on every fill and no taxes.
