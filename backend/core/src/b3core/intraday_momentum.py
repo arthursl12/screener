@@ -404,6 +404,35 @@ def performance(returns: pd.Series) -> dict[str, float]:
     }
 
 
+def extended_performance(returns: pd.Series) -> dict[str, float]:
+    """Statistics beyond `performance`, on daily returns indexed by date (missing days left out).
+
+    `profit_factor` is the sum of the winning days over the sum of the losing days (infinite
+    with no losing day); `sortino` is the mean over the downside deviation around zero, times the
+    root of 252; `cagr` compounds the daily returns over the calendar years between the first and
+    last day (days / 365.25, as docs/cdi.md); `calmar` is `cagr` over the worst drawdown.
+    """
+    clean = returns.dropna()
+    if len(clean) < 2:
+        raise ValueError("need at least two returns")
+    r = clean.to_numpy(dtype=np.float64)
+    equity = np.concatenate(([1.0], np.cumprod(1.0 + r)))
+    peak = np.maximum.accumulate(equity)
+    drawdown = float(((peak - equity) / peak).max())
+    years = (clean.index[-1] - clean.index[0]).days / 365.25
+    cagr = float(equity[-1] ** (1.0 / years) - 1.0)
+    losses = float(-r[r < 0].sum())
+    downside = math.sqrt(float(np.mean(np.minimum(r, 0.0) ** 2)))
+    return {
+        "profit_factor": float(r[r > 0].sum()) / losses if losses > 0 else math.inf,
+        "sortino": float(r.mean()) / downside * math.sqrt(252) if downside > 0 else math.nan,
+        "cagr": cagr,
+        "years": years,
+        "max_drawdown": drawdown,
+        "calmar": cagr / drawdown if drawdown > 0 else math.nan,
+    }
+
+
 def intraday_equity(
     bars: pd.DataFrame, config: IntradayConfig, result: pd.DataFrame
 ) -> pd.DataFrame:
