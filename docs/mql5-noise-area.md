@@ -1,18 +1,14 @@
 # MQL5 (MetaTrader 5): Noise Area momentum
 
-The rule of `docs/brief.md` section 10 as an **Expert Advisor** (trades, backtests in the Strategy Tester) and an **indicator** (bands, VWAP, arrows where the position changes), sharing one core.
+The rule of `docs/brief.md` section 10 as **one file**, `mql5/Experts/NoiseAreaEA.mq5`: an Expert Advisor that trades (and backtests in the Strategy Tester) and also draws the bands, the VWAP and arrows where the position changes, as chart objects. (MT5 does not allow one file to be both an EA and an indicator; the drawing is done by the EA.) In the file, in order: the rule (class `CNoiseCore`: bands, VWAP, history of the moves, stops, position; fed one closed bar at a time), the inputs, the drawing, the trading.
 
-| File | What it is |
-| --- | --- |
-| `mql5/Include/NoiseArea/NoiseCore.mqh` | the logic: bands, VWAP, the history of the moves, the stops, the position; fed one closed bar at a time |
-| `mql5/Experts/NoiseAreaEA.mq5` | the Expert Advisor |
-| `mql5/Indicators/NoiseAreaIndicator.mq5` | the indicator |
-
-**It has not been compiled in MetaEditor by me** (no MetaTrader here). What was checked: the text of `NoiseCore.mqh`, compiled as C++ with small stand-ins for the MQL types (`MqlDateTime`, `TimeToStruct`, `ArrayResize`...), was run on all 687,506 one-minute bars of WIN (2021-12 to 2026-11-16) against the Python engine. See "What was checked". The EA's and the indicator's own code (inputs, `CopyRates`, `CTrade`, buffers, `SymbolInfoSessionTrade`) is not covered by that.
+**It has not been compiled in MetaEditor by me** (no MetaTrader here). What was checked: the text of `CNoiseCore` (the class in the file), compiled as C++ with small stand-ins for the MQL types (`MqlDateTime`, `TimeToStruct`, `ArrayResize`...), was run on all 687,506 one-minute bars of WIN (2021-12 to 2026-11-16) against the Python engine. See "What was checked". The rest of the file (inputs, `CopyRates`, `CTrade`, the chart objects, `SymbolInfoSessionTrade`) is not covered by that.
 
 ## Install
 
-Copy the three folders' contents into the `MQL5` folder of the terminal's data directory (File > Open Data Folder), keeping the layout: `MQL5/Include/NoiseArea/NoiseCore.mqh`, `MQL5/Experts/NoiseAreaEA.mq5`, `MQL5/Indicators/NoiseAreaIndicator.mq5`. Open each `.mq5` in MetaEditor and compile (F7). The EA includes the core with `#include <NoiseArea/NoiseCore.mqh>`.
+Copy `NoiseAreaEA.mq5` into `MQL5/Experts/` in the terminal's data directory (File > Open Data Folder), open it in MetaEditor and compile (F7). Drag it onto a chart. Nothing else is needed.
+
+The drawing: `DrawChart` (on by default; off in a non-visual Strategy Tester run) and `DrawDays` (the drawing of the last 5 days is kept; older objects are deleted on each new day). To trade nothing and only look at the bands, set `SendOrders` to false.
 
 ## Inputs
 
@@ -46,11 +42,11 @@ Symbol: the same continuous WIN series the data was exported from (`WIN$N`), M1,
 
 ## What was checked
 
-`NoiseCore.mqh` compiled with `g++ -Wall` (no warnings) and run on all the bars against `strategy_exposure`, for five configurations (WIN optimized; the paper; the opposite-band stop on the grid; the VWAP-only stop at every bar; VWAP+band at every bar with 15-minute steps, a 10:30 start and a 17:30 exit): **0 bars where the position held differs from the engine out of 687,506**, in all five. The position wanted for the next bar equals the next bar's held position, except in 2 bars of three of the configurations on 2026-03-10 and 2026-10-28, days whose last bar is missing in the data; and the wanted position is flat on the last two bars of every day that closes at 18:25.
+The `CNoiseCore` class (copied verbatim from the earlier `NoiseCore.mqh`, checked identical) compiled with `g++ -Wall` (no warnings) and run on all the bars against `strategy_exposure`, for five configurations (WIN optimized; the paper; the opposite-band stop on the grid; the VWAP-only stop at every bar; VWAP+band at every bar with 15-minute steps, a 10:30 start and a 17:30 exit): **0 bars where the position held differs from the engine out of 687,506**, in all five. The position wanted for the next bar equals the next bar's held position, except in 2 bars of three of the configurations on 2026-03-10 and 2026-10-28, days whose last bar is missing in the data; and the wanted position is flat on the last two bars of every day that closes at 18:25.
 
 ## Not checked, to try in MT5
 
-- That the three files compile in MetaEditor, and that the indicator draws (the buffers, the arrows).
+- That the file compiles in MetaEditor, and that the chart objects draw (segments, arrows).
 - That `CTrade` fills correctly on the B3 symbol (`SetTypeFillingBySymbol`) and that `PositionClose` then an order the other way behaves on the account's margin mode (netting or hedging).
 - `AutoSessionEnd`: whether the symbol's schedule (`SymbolInfoSessionTrade`) holds the early closes. If it just says 09:00 to 18:25, set `SessionEnd` by hand, or rely on the new-day flat.
 - That the Strategy Tester's M1 history matches the exported CSV (it should: the data was exported from MT5).
