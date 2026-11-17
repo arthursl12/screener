@@ -5,25 +5,28 @@
 // Ported from the Python reference in backend/core/src/b3core (noise_area.py, intraday_momentum.py).
 // Educational only, not investment advice. See docs/ntsl-noise-area.md.
 //
-// Preset 1 = Paper (original): 14 days, k 1.0, every 30 min from 09:00, no exit time,
-//            stop = back inside the band or across the VWAP, acted on at the half-hour checkpoints.
-// Preset 2 = WIN optimized (best trial of the 50,000-trial search by WIN, development data only):
-//            20 days, k 1.5, every 60 min from 12:00, exit 18:20,
-//            stop = back inside the band, checked on every candle.
-// Preset 3 = Custom: the inputs below.
+// The inputs below are the parameters themselves (so ProfitPro's optimizer can sweep them).
+// Their defaults are the WIN OPTIMIZED trial: the best trial by WIN of the 50,000-trial search
+// (development data only): 20 days, k 1.5, a decision every 60 min from 12:00, exit 18:20,
+// stop = back inside the band, acted on at every candle.
+//
+// The PAPER (original) rule is these inputs instead:
+//   Lookback(14); Mult(1.0); Cadence(30); FirstDecision(900); ExitTime(2400); StopKind(1); EveryBar(false);
+// that is: 14 days, k 1.0, every 30 min from 09:00, no exit time (held to the close), stop = back
+// inside the band or across the VWAP, acted on at the half-hour checkpoints only.
+//
+// The days of history needed before a band shows is Lookback - 1, as in the search.
 //
 // Use on a minute chart (1 minute is the exact one) of WIN or WDO. The candle history must hold
 // at least the lookback in days, or the bands do not show.
 Input
-Preset(1);
-Lookback(14);        // Custom: days of history (up to 90)
-MinDays(13);         // Custom: days needed before the band shows
-Mult(1.0);           // Custom: band multiplier k
-Cadence(30);         // Custom: decision every N minutes (a multiple of the chart's candle)
-FirstDecision(900);  // Custom: first decision at or after this time (HHMM)
-ExitTime(2400);      // Custom: exit time HHMM (2400 = hold to the close)
-StopKind(1);         // Custom: 1 VWAP+band, 2 band, 3 opposite band, 4 VWAP only
-EveryBar(false);     // Custom: act on the stop at every candle, not only at checkpoints
+Lookback(20);        // days of history (up to 90)
+Mult(1.5);           // band multiplier k
+Cadence(60);         // decision every N minutes (a multiple of the chart's candle)
+FirstDecision(1200); // first decision at or after this time (HHMM)
+ExitTime(1820);      // exit time HHMM (2400 = hold to the close)
+StopKind(2);         // 1 VWAP+band, 2 band, 3 opposite band, 4 VWAP only
+EveryBar(true);      // act on the stop at every candle, not only at the checkpoints
 SessionStart(900);   // the market day starts at this time (HHMM); WIN trades 09:00 to 18:25
 ShowBands(true);
 ShowVwap(true);
@@ -45,21 +48,16 @@ Hist : Array[1..156000] of Float;   // 260 rows (a ring of about a year of days)
 
 begin
     // ---- the settings in force ------------------------------------------------------------
-    if Preset = 1 then
-    begin
-        NDays := 14; NMin := 13; KMult := 1.0; CadMin := 30; FirstMin := 540; ExitMin := 1440; StopK := 1; EveryB := false;
-    end
-    else if Preset = 2 then
-    begin
-        NDays := 20; NMin := 19; KMult := 1.5; CadMin := 60; FirstMin := 720; ExitMin := 1100; StopK := 2; EveryB := true;
-    end
-    else
-    begin
-        NDays := Lookback; NMin := MinDays; KMult := Mult; CadMin := Cadence; StopK := StopKind; EveryB := EveryBar;
-        FirstMin := TimeToMinutes(FirstDecision);
-        if ExitTime >= 2400 then ExitMin := 1440 else ExitMin := TimeToMinutes(ExitTime);
-    end;
+    NDays := Lookback;
+    KMult := Mult;
+    CadMin := Cadence;
+    StopK := StopKind;
+    EveryB := EveryBar;
+    FirstMin := TimeToMinutes(FirstDecision);
+    if ExitTime >= 2400 then ExitMin := 1440 else ExitMin := TimeToMinutes(ExitTime);
     if NDays > 90 then NDays := 90;
+    if NDays < 2 then NDays := 2;
+    NMin := NDays - 1;
     Rows := 260;
     Cols := 600;
     StartMin := TimeToMinutes(SessionStart);
@@ -231,9 +229,7 @@ begin
         if (CloseMin >= ExitMin) or (CloseMin >= EndMin) then Tgt := 0;
         if Tgt = 0 then
         begin
-            // PosBefore is the model's own position: an entry filled at this candle's open is not yet
-            // seen by HasPosition in the backtest, so a stop on the first candle held waited one candle
-            if HasPosition or (PosBefore <> 0) then ClosePosition;
+            if HasPosition then ClosePosition;
         end
         else if Tgt > 0 then
         begin

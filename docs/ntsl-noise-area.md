@@ -1,6 +1,6 @@
 # NTSL indicator (ProfitPro): Noise Area momentum
 
-`ntsl/noise_area_win.ntsl` draws the strategy of `docs/brief.md` section 10 on a ProfitPro chart: the Noise Area (green upper band, red lower band), the session VWAP (yellow) and the position the rule would hold (candles painted green when long, red when short). By default it is an **indicator** that places no orders. With the input `SendOrders(true)` it is also a **strategy**: it sends the orders, to be applied as an execution rule and backtested in ProfitPro (see "The strategy part").
+`ntsl/noise_area_win.ntsl` draws the strategy of `docs/brief.md` section 10 on a ProfitPro chart: the Noise Area (green upper band, red lower band), the session VWAP (yellow) and the position the rule would hold (candles painted green when long, red when short). By default it is an **indicator** that places no orders. With the input `SendOrders(true)` it is also a **strategy**: it sends the orders, to be applied as an execution rule and backtested in ProfitPro (see "The strategy part"). The paper's rule and the WIN optimized trial differ only by the input values (table below).
 
 **It has not been compiled in ProfitPro by me.** The language was read from Nelogica's official "Documentação Módulo Estratégias (NTSL)" (the PDF hosted at neotraderbot.com, 2023-05-31) and from the owner's two example scripts. What was checked is the logic (below), not the syntax.
 
@@ -8,20 +8,21 @@
 
 1. ProfitPro, strategy editor, new strategy, paste `ntsl/noise_area_win.ntsl`, compile, apply to a chart of WIN or WDO (continuous contract).
 2. Use a **minute chart**. 1 minute is the exact one; 5 minutes also runs (a few positions differ, see below). `Cadence` must be a multiple of the candle (a 30-minute step on a 5-minute chart is fine).
-3. **Preset** input: `1` Paper (original), `2` WIN optimized, `3` Custom (the other inputs).
+3. There are **no presets**: the inputs are the parameters themselves, so ProfitPro's optimizer can sweep them. The defaults are the **WIN optimized** trial; the paper's rule is the second column, typed in by hand (it is also written in the comments at the top of the file).
 
-| | Preset 1, Paper | Preset 2, WIN optimized |
+| Input | Default: WIN optimized | The paper (original) |
 | --- | --- | --- |
-| Lookback, minimum history | 14 days, 13 | 20 days, 19 |
-| Band multiplier | 1.0 | 1.5 |
-| Decision | every 30 minutes from 09:00 | every 60 minutes from 12:00 |
-| Exit time | none (held to the close) | 18:20 |
-| Stop | back inside the band or across the VWAP | back inside the band (no VWAP) |
-| Stop acted on | at the half-hour checkpoints | at every candle |
+| `Lookback` (days; the days needed before a band shows is this minus 1) | 20 | 14 |
+| `Mult` (band multiplier k) | 1.5 | 1.0 |
+| `Cadence` (decision every N minutes) | 60 | 30 |
+| `FirstDecision` (HHMM) | 1200 | 900 |
+| `ExitTime` (HHMM, 2400 = hold to the close) | 1820 | 2400 |
+| `StopKind` (1 VWAP+band, 2 band, 3 opposite band, 4 VWAP only) | 2 (back inside the band) | 1 (inside the band or across the VWAP) |
+| `EveryBar` (act on the stop at every candle) | true | false (the half-hour checkpoints only) |
 
-Preset 2 is the best trial **by WIN** of the 50,000-trial search, chosen on development data. On the final test its WIN Sharpe went from 2.05 to 2.10, but it failed on WDO and does not beat the CDI on the 50/50 average (`docs/brief.md` section 10; `docs/adr/0001-winfut-intraday-momentum-final-test.md`). It is not a signal service.
+The WIN optimized default is the best trial **by WIN** of the 50,000-trial search, chosen on development data. On the final test its WIN Sharpe went from 2.05 to 2.10, but it failed on WDO and does not beat the CDI on the 50/50 average (`docs/brief.md` section 10; `docs/adr/0001-winfut-intraday-momentum-final-test.md`). It is not a signal service.
 
-Custom inputs: `Lookback` (up to 90), `MinDays`, `Mult`, `Cadence`, `FirstDecision` (HHMM), `ExitTime` (HHMM, 2400 = hold to the close), `StopKind` (1 VWAP+band, 2 band, 3 opposite band, 4 VWAP only), `EveryBar`. `SessionStart` (default 900) anchors the day.
+Other inputs: `SessionStart` (default 900), `ShowBands`, `ShowVwap`, `PaintPosition`, and for the strategy part `SendOrders`, `Contracts`, `SessionEnd`.
 
 The bands need the lookback in days of candle history; until then no band is drawn. If nothing shows, load more history first.
 
@@ -37,16 +38,16 @@ Apply it as an execution rule ("Inserir Regra de Execução") on a 1-minute char
 
 What the strategy part does not do: the paper's volatility-targeted size (the contracts are fixed), a stop order resting in the market (the stop is evaluated at the candle's close), or a flat at the true last candle of a day with an early close (`SessionEnd` must be set by season; a position left over on such a day is only closed at the next day's first candle by the exit rule, not by this code).
 
-Checked in Python: the position wanted for the next candle equals the position the model holds in the next candle on all 276,018 candles of WIN from 2023-01 (preset 2).
+Checked in Python: the position wanted for the next candle equals the position the model holds in the next candle on all 276,018 candles of WIN from 2023-01 (the WIN optimized inputs).
 
 ## Compared with the ProfitPro backtest (17 November 2026)
 
-The owner ran preset 2 (`SendOrders(true)`, `Contracts(1)`, 1-minute chart, no commissions) over 26 October to 16 November and exported the operations (`samples/comparison/ops_profit.csv`, git-ignored: it holds account data). `notebooks/winfut_trade_book.ipynb`, section 3c, matches them to the Python model:
+The owner ran the WIN optimized inputs (`SendOrders(true)`, `Contracts(1)`, 1-minute chart, no commissions) over 26 October to 16 November and exported the operations (`samples/comparison/ops_profit.csv`, git-ignored: it holds account data). `notebooks/winfut_trade_book.ipynb`, section 3c, matches them to the Python model:
 
 - **13 ProfitPro operations, 13 model trades, 13 matched** on side and entry time, with **identical entry prices**: ProfitPro fills a market order at the **open of the candle after the signal**, which is the model's `entry_next_open`, not its decision-close fill (the two differ by 5 points or less per fill).
 - **11 of 13 identical to the point** on exit time and exit price (next-open fills).
 - **Two differences, both explained:**
-  1. 9 Nov, long 15:00: the model leaves at the 15:00 candle's close (the price is 83 points inside the band, a clear stop) and fills at the 15:01 open, 172,920 (-25 points); ProfitPro left at 15:02, 172,990 (+45 points). The stop fell on the first candle held. The backtest does not show the code a position entered at a candle's open until the next candle has run, so `if HasPosition then ClosePosition` waited one candle. **Changed** to `if HasPosition or (PosBefore <> 0)` (the model's own position); not yet re-run in ProfitPro. Re-run it: this trade should now leave at 15:01 for 172,920. If a `ClosePosition` on a flat position or a reprocessed candle misbehaves, that line is the one to look at.
+  1. 9 Nov, long 15:00: the model leaves at the 15:00 candle's close (the price is 83 points inside the band, a clear stop) and fills at the 15:01 open, 172,920 (-25 points); ProfitPro left at 15:02, 172,990 (+45 points). The stop fell on the **first candle held**. A second export after changing the close to `if HasPosition or (PosBefore <> 0)` gave the same 15:02 exit, so that change was reverted. The reading that fits: the backtest does not let the code see, or close, a position entered at a candle's open until the next candle has run, so a stop on the first held candle waits one candle. It looks like a property of ProfitPro's backtest, not of the rule. **How much it matters** (Python, WIN optimized, one contract, whole history): 47 of 583 trades (8.1%) exit on their first held candle; leaving one candle later changes them by 55 points each on average (standard deviation 85) and adds **+1,205 points over the history, +4.5% of the 26,785 points** of the next-open model, because later exits happen to be better than immediate ones (-72 against -46 points a trade). So the ProfitPro backtest reads slightly better than the model, by that amount, and any one trade can differ by a hundred points. It does not change a rule, and it is not known whether live automation behaves the same.
   2. 16 Nov, short 14:00: the file stops at 17:30, so the model closed it at 17:31 (170,845); ProfitPro closed it at 18:20 (170,910). Not a disagreement.
 - Total over the 13: **215 points (R$ 43.00) in ProfitPro, 210 points (R$ 42.00) in the model** with next-open fills; the 5 points are the first difference net of the second.
 
@@ -67,8 +68,8 @@ A line-by-line Python transliteration of the script (the ring of days, the serie
 
 | Case | 1-minute bars differing | 5-minute bars differing |
 | --- | --- | --- |
-| Preset 1, paper | 0 | 0.10% |
-| Preset 2, WIN optimized | 0 | 0.31% |
+| The paper's inputs | 0 | 0.10% |
+| The WIN optimized inputs | 0 | 0.31% |
 | Opposite band, grid | 0 | 0.03% |
 | VWAP only, every bar | 0 | 0.93% |
 | VWAP+band, every bar, 15 min, 10:30, exit 17:30 | 0 | 0.41% |
