@@ -33,7 +33,7 @@ ShowVwap(true);
 PaintPosition(true);
 SendOrders(false);   // true: send the orders (apply the script as an execution rule)
 Contracts(1);        // contracts per trade, fixed
-SessionEnd(1825);    // the last candle closes here (HHMM); the position is closed on it. B3 closes WIN at 17:55 in some seasons: set 1755 then
+SessionEnd(1825);    // the time the day's LAST candle closes (HHMM); the position is flat by then. WIN 1825 (1755 in some seasons), stocks 1800
 
 Var
 NDays, NMin, CadMin, StopK, Rows, Cols : Integer;
@@ -226,7 +226,12 @@ begin
         EndMin := TimeToMinutes(SessionEnd);
         CloseMin := OpenMin + Floor(BarDuration + 0.5);
         Tgt := PosAfter;
-        if (CloseMin >= ExitMin) or (CloseMin >= EndMin) then Tgt := 0;
+        if CloseMin >= ExitMin then Tgt := 0;
+        // A market order fills at the NEXT candle's open, and the last candle of the day has no next
+        // candle that day: an order sent at its close would fill the next morning (a position kept
+        // overnight). So the flatten goes out one candle early, at the close of the candle before the
+        // last, and fills at the last candle's open. SessionEnd must be the real close of the last candle.
+        if CloseMin + Floor(BarDuration + 0.5) >= EndMin then Tgt := 0;
         if Tgt = 0 then
         begin
             if HasPosition then ClosePosition;
