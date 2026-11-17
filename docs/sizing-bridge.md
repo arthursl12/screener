@@ -56,7 +56,7 @@ For shares the same steps with `shares x P` in place of `contracts x 0.20 x Open
 
 ## 5. A real day
 
-2023-07-31, development data, the final model:
+2023-07-31, development data, the final model (the paper's rule: no exit time, R$ 0.25 a side). The equity is **simulated**: it starts at R$ 100,000 on the first traded day and each day's size is set on the equity at the end of the day before, so it is the R$ 100,000 plus the net result of the 402 traded days before this one (fees included), R$ 16,477 in all. It follows the path of the run (R$ 97,575 at the end of 2021, R$ 117,274 at the end of 2022, R$ 135,576 at the end of 2023), so the same rule trades 9 contracts here and other numbers on other days.
 
 | | |
 | --- | --- |
