@@ -7,3 +7,5 @@ notebooks/turtle.ipynb -filter
 notebooks/ifr2_liquid.ipynb -filter
 notebooks/turtle_stocks.ipynb -filter
 notebooks/turtle_deep_dive.ipynb -filter
+notebooks/winfut_wdo_optimization.ipynb -filter
+notebooks/winfut_best_vs_paper.ipynb -filter
