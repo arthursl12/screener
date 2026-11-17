@@ -51,7 +51,7 @@ Not built: 123 de venda, a genetic-algorithm optimizer, the API, the database an
 ## How it was built
 
 - **Spec first.** No trading rule is implemented until it is written in `docs/brief.md`; ambiguities are listed as open questions instead of guessed. Several rules were reverse-engineered against real platform trades, and the differences are documented.
-- **Tests first.** 378 tests: golden cases whose every number is worked out by hand in the spec, Hypothesis property tests (no look-ahead through prefix invariance, no overlapping trades, determinism, costs only lower PnL), parity tests against a research prototype and TA-Lib, and manual mutation checks that confirmed the tests catch a deliberate bug.
+- **Tests first.** 463 tests: golden cases whose every number is worked out by hand in the spec, Hypothesis property tests (no look-ahead through prefix invariance, no overlapping trades, determinism, costs only lower PnL), parity tests against a research prototype and TA-Lib, and manual mutation checks that confirmed the tests catch a deliberate bug.
 - **Honest reporting.** In-sample against out-of-sample everywhere, random-subset baselines for any "pick the best" step, and survivorship, leverage and single-regime caveats stated next to the numbers.
 - **Built with Claude Code as a tutor and reviewer.** `CLAUDE.md` defines a learning mode (the owner writes the core code, the assistant teaches and reviews). Where the assistant wrote code at the owner's request, the commits say so.
 
