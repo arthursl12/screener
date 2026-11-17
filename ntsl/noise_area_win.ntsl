@@ -1,0 +1,236 @@
+// Noise Area momentum for WIN / WDO (Zarattini, Aziz and Barbon, "Beat the Market").
+// Indicator version: bands, session VWAP and the position the rule would hold (candles painted).
+// Ported from the Python reference in backend/core/src/b3core (noise_area.py, intraday_momentum.py).
+// Educational only, not investment advice. See docs/ntsl-noise-area.md.
+//
+// Preset 1 = Paper (original): 14 days, k 1.0, every 30 min from 09:00, no exit time,
+//            stop = back inside the band or across the VWAP, acted on at the half-hour checkpoints.
+// Preset 2 = WIN optimized (best trial of the 50,000-trial search by WIN, development data only):
+//            20 days, k 1.5, every 60 min from 12:00, exit 18:20,
+//            stop = back inside the band, checked on every candle.
+// Preset 3 = Custom: the inputs below.
+//
+// Use on a minute chart (1 minute is the exact one) of WIN or WDO. The candle history must hold
+// at least the lookback in days, or the bands do not show.
+Input
+Preset(1);
+Lookback(14);        // Custom: days of history (up to 90)
+MinDays(13);         // Custom: days needed before the band shows
+Mult(1.0);           // Custom: band multiplier k
+Cadence(30);         // Custom: decision every N minutes (a multiple of the chart's candle)
+FirstDecision(900);  // Custom: first decision at or after this time (HHMM)
+ExitTime(2400);      // Custom: exit time HHMM (2400 = hold to the close)
+StopKind(1);         // Custom: 1 VWAP+band, 2 band, 3 opposite band, 4 VWAP only
+EveryBar(false);     // Custom: act on the stop at every candle, not only at checkpoints
+SessionStart(900);   // the market day starts at this time (HHMM); WIN trades 09:00 to 18:25
+ShowBands(true);
+ShowVwap(true);
+PaintPosition(true);
+
+Var
+NDays, NMin, CadMin, StopK, Rows, Cols : Integer;
+KMult : Float;
+FirstMin, ExitMin, StartMin, OpenMin, KeyI, DayRow, Idx, iCol, iDay, DayN, Dia : Integer;
+EveryB, NewDay, VwOk, AboveU, BelowL, AboveV, BelowV, IsDec, StopHit : Boolean;
+TypPx, CumPV, CumV, VW, DayOpen, PrevClose, HasPrev, MoveV, SumMv, Sigma, Wd, RefHi, RefLo, UB, LB, BandOk : Float;
+PosAfter, PosBefore, St, Held, pTmp, vObs : Float;
+CntMv : Integer;
+Hist : Array[1..156000] of Float;   // 260 rows (a ring of about a year of days) x 600 columns (minutes since the session start)
+
+begin
+    // ---- the settings in force ------------------------------------------------------------
+    if Preset = 1 then
+    begin
+        NDays := 14; NMin := 13; KMult := 1.0; CadMin := 30; FirstMin := 540; ExitMin := 1440; StopK := 1; EveryB := false;
+    end
+    else if Preset = 2 then
+    begin
+        NDays := 20; NMin := 19; KMult := 1.5; CadMin := 60; FirstMin := 720; ExitMin := 1100; StopK := 2; EveryB := true;
+    end
+    else
+    begin
+        NDays := Lookback; NMin := MinDays; KMult := Mult; CadMin := Cadence; StopK := StopKind; EveryB := EveryBar;
+        FirstMin := TimeToMinutes(FirstDecision);
+        if ExitTime >= 2400 then ExitMin := 1440 else ExitMin := TimeToMinutes(ExitTime);
+    end;
+    if NDays > 90 then NDays := 90;
+    Rows := 260;
+    Cols := 600;
+    StartMin := TimeToMinutes(SessionStart);
+
+    // ---- the day: every value below is rebuilt from the previous candle, so a candle processed
+    // twice gives the same result ----------------------------------------------------------
+    Dia := Date;
+    NewDay := (Dia <> Dia[1]);
+    OpenMin := TimeToMinutes(Time);                          // the candle's open time, in minutes
+    KeyI := Floor(OpenMin + BarDuration - StartMin + 0.5);   // minutes since the start, at the candle's close
+
+    if NewDay then
+    begin
+        DayN := DayN[1] + 1;
+        DayOpen := Open;
+        PrevClose := Close[1];
+        if Close[1] > 0 then HasPrev := 1 else HasPrev := 0;
+    end
+    else
+    begin
+        DayN := DayN[1];
+        DayOpen := DayOpen[1];
+        PrevClose := PrevClose[1];
+        HasPrev := HasPrev[1];
+    end;
+    DayRow := Mod(DayN, Rows);
+
+    // the session VWAP: typical price (high + low + close) / 3, weighted by the contracts traded
+    TypPx := (High + Low + Close) / 3;
+    if NewDay then
+    begin
+        CumPV := TypPx * Quantity;
+        CumV := Quantity;
+    end
+    else
+    begin
+        CumPV := CumPV[1] + TypPx * Quantity;
+        CumV := CumV[1] + Quantity;
+    end;
+    VwOk := CumV > 0;
+    if VwOk then VW := CumPV / CumV else VW := 0;
+
+    // ---- sigma: the mean |close / day open - 1| at this time of day over the previous days ----
+    if NewDay then
+        for iCol := 1 to Cols - 1 do
+            Hist[DayRow * Cols + iCol] := -1;
+
+    Sigma := -1;
+    UB := 0;
+    LB := 0;
+    BandOk := 0;
+    if (KeyI >= 1) and (KeyI <= Cols - 1) and (DayOpen > 0) then
+    begin
+        MoveV := Abs(Close / DayOpen - 1);
+        // the last NDays observations of this time of day, going back day by day (a day with no
+        // candle at this time is skipped, as in the Python reference)
+        SumMv := 0;
+        CntMv := 0;
+        iDay := 1;
+        while (CntMv < NDays) and (iDay <= Rows - 1) and (DayN - iDay >= 1) do
+        begin
+            vObs := Hist[Mod(DayN - iDay, Rows) * Cols + KeyI];
+            if vObs >= 0 then
+            begin
+                SumMv := SumMv + vObs;
+                CntMv := CntMv + 1;
+            end;
+            iDay := iDay + 1;
+        end;
+        if CntMv >= NMin then Sigma := SumMv / CntMv;
+        Hist[DayRow * Cols + KeyI] := MoveV;      // today's move is stored after reading, so a day never sees itself
+    end;
+
+    // ---- the Noise Area: the first day has no previous close and so no band ---------------------
+    if (Sigma >= 0) and (HasPrev = 1) then
+    begin
+        Wd := KMult * Sigma;
+        if DayOpen > PrevClose then RefHi := DayOpen else RefHi := PrevClose;
+        if DayOpen < PrevClose then RefLo := DayOpen else RefLo := PrevClose;
+        UB := RefHi * (1 + Wd);
+        LB := RefLo * (1 - Wd);
+        BandOk := 1;
+    end;
+
+    AboveU := (BandOk = 1) and (Close > UB);
+    BelowL := (BandOk = 1) and (Close < LB);
+    AboveV := VwOk and (Close > VW);
+    BelowV := VwOk and (Close < VW);
+
+    // ---- the position ----------------------------------------------------------------------------
+    // A decision is taken on the candles that close Cad minutes apart from the session start, from
+    // FirstMin on. What is decided at a close is held from the next candle.
+    PosBefore := PosAfter[1];
+    if NewDay then PosBefore := 0;
+    St := PosBefore;
+    IsDec := (Mod(KeyI, CadMin) = 0) and (StartMin + KeyI >= FirstMin);
+
+    if IsDec then
+    begin
+        if StopK = 1 then
+        begin
+            if AboveU and AboveV then St := 1
+            else if BelowL and BelowV then St := -1
+            else St := 0;
+        end
+        else if StopK = 2 then
+        begin
+            if AboveU then St := 1
+            else if BelowL then St := -1
+            else St := 0;
+        end
+        else if StopK = 3 then
+        begin
+            if AboveU then St := 1
+            else if BelowL then St := -1
+            else St := PosBefore;
+        end
+        else
+        begin
+            pTmp := PosBefore;
+            if ((pTmp > 0) and (AboveV = false)) or ((pTmp < 0) and (BelowV = false)) then pTmp := 0;
+            if pTmp = 0 then
+            begin
+                if AboveU then St := 1
+                else if BelowL then St := -1
+                else St := 0;
+            end
+            else St := pTmp;
+        end;
+    end
+    else if EveryB and (PosBefore <> 0) then
+    begin
+        StopHit := false;
+        if StopK = 1 then
+        begin
+            if PosBefore > 0 then StopHit := not (AboveU and AboveV) else StopHit := not (BelowL and BelowV);
+        end
+        else if StopK = 2 then
+        begin
+            if PosBefore > 0 then StopHit := not AboveU else StopHit := not BelowL;
+        end
+        else if StopK = 3 then
+        begin
+            if PosBefore > 0 then StopHit := BelowL else StopHit := AboveU;
+        end
+        else
+        begin
+            if PosBefore > 0 then StopHit := not AboveV else StopHit := not BelowV;
+        end;
+        if StopHit then St := 0;
+    end;
+    PosAfter := St;
+
+    // what is held DURING this candle is what was decided at the previous close; flat from the
+    // candle that opens at or after the exit time
+    Held := PosBefore;
+    if OpenMin >= ExitMin then Held := 0;
+
+    // ---- drawing ----------------------------------------------------------------------------------
+    if PaintPosition then
+    begin
+        if Held > 0 then PaintBar(clLime)
+        else if Held < 0 then PaintBar(clRed);
+    end;
+
+    if ShowBands and (BandOk = 1) then
+    begin
+        Plot(UB);
+        Plot2(LB);
+    end
+    else
+    begin
+        NoPlot(1);
+        NoPlot(2);
+    end;
+    if ShowVwap and VwOk then Plot3(VW) else NoPlot(3);
+    SetPlotColor(1, clGreen);
+    SetPlotColor(2, clRed);
+    SetPlotColor(3, clYellow);
+end;
