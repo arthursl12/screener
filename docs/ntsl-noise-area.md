@@ -1,6 +1,6 @@
 # NTSL indicator (ProfitPro): Noise Area momentum
 
-`ntsl/noise_area_win.ntsl` draws the strategy of `docs/brief.md` section 10 on a ProfitPro chart: the Noise Area (green upper band, red lower band), the session VWAP (yellow) and the position the rule would hold (candles painted green when long, red when short). It is an **indicator**: it places no orders. An execution (`BuyAtMarket` and so on) version can follow.
+`ntsl/noise_area_win.ntsl` draws the strategy of `docs/brief.md` section 10 on a ProfitPro chart: the Noise Area (green upper band, red lower band), the session VWAP (yellow) and the position the rule would hold (candles painted green when long, red when short). By default it is an **indicator** that places no orders. With the input `SendOrders(true)` it is also a **strategy**: it sends the orders, to be applied as an execution rule and backtested in ProfitPro (see "The strategy part").
 
 **It has not been compiled in ProfitPro by me.** The language was read from Nelogica's official "Documentação Módulo Estratégias (NTSL)" (the PDF hosted at neotraderbot.com, 2023-05-31) and from the owner's two example scripts. What was checked is the logic (below), not the syntax.
 
@@ -24,6 +24,20 @@ Preset 2 is the best trial **by WIN** of the 50,000-trial search, chosen on deve
 Custom inputs: `Lookback` (up to 90), `MinDays`, `Mult`, `Cadence`, `FirstDecision` (HHMM), `ExitTime` (HHMM, 2400 = hold to the close), `StopKind` (1 VWAP+band, 2 band, 3 opposite band, 4 VWAP only), `EveryBar`. `SessionStart` (default 900) anchors the day.
 
 The bands need the lookback in days of candle history; until then no band is drawn. If nothing shows, load more history first.
+
+## The strategy part (`SendOrders(true)`)
+
+Inputs: `SendOrders` (false by default), `Contracts` (a fixed number, default 1) and `SessionEnd` (HHMM of the last candle's close, default 1825; B3 closes WIN at 17:55 in some seasons, set 1755 then).
+
+At the end of each candle the script works out the position wanted for the next candle: what was decided at this close, **flat** when the candle closes at or after the exit time or at `SessionEnd`. It compares that with the position actually held and sends one order: `ClosePosition` to go flat, `BuyAtMarket(Contracts)` or `SellShortAtMarket(Contracts)` from flat, and `ReversePosition` to turn around (the manual: a Buy sent while short is only a cover, and a ToCover order never reverses). Because it compares with the real position, a candle processed twice sends nothing new.
+
+Apply it as an execution rule ("Inserir Regra de Execução") on a 1-minute chart, set the backtest's costs to the model's (fee R$ 0.25 a side plus one tick, R$ 1.00 slippage, on WIN) and `Contracts` to 1.
+
+**Compare with the Python model** using `notebooks/winfut_trade_book.ipynb`: it runs the same configuration with one fixed contract and prints the last N trades (side, entry and exit times and prices, points, reais), with the next bar's open beside the Python fill (the close of the decision bar), and writes the full list to a CSV. What the notebook cannot say is where ProfitPro fills a market order sent at the end of a candle: the manual says orders are sent when the candle ends and that backtest orders are simulated "at the end of the execution flow of the candle", not whether at that candle's close or the next open. The two price columns are there to find out.
+
+What the strategy part does not do: the paper's volatility-targeted size (the contracts are fixed), a stop order resting in the market (the stop is evaluated at the candle's close), or a flat at the true last candle of a day with an early close (`SessionEnd` must be set by season; a position left over on such a day is only closed at the next day's first candle by the exit rule, not by this code).
+
+Checked in Python: the position wanted for the next candle equals the position the model holds in the next candle on all 276,018 candles of WIN from 2023-01 (preset 2).
 
 ## How it follows the language
 
@@ -53,5 +67,6 @@ The same on the 481 of 499 days with no missing minute and a 09:00 first candle:
 - That it compiles (types of `Floor`, `Mod`, `TimeToMinutes`, array indexing with an `Integer` expression, `else if` chains).
 - `Date <> Date[1]` through an assigned variable (`Dia`) as the new-day test.
 - That `BarDuration` is 1 on a 1-minute chart and `Quantity` is the contracts traded.
+- The strategy part: that `ReversePosition`, `ClosePosition` and the order calls compile and behave as the manual says; where the backtest fills a market order (decision candle close or next open); that a script with order calls still draws its plots.
 - Speed: a loop of 600 per new day and up to 259 steps per candle for the rare late-session minutes. If it is slow, lower `Rows` and the array size to 130 (the cost is bands that come later after the short-session seasons).
 - The candle's first tick has `[0]` zeroed (manual): in real time the position is rebuilt each tick from `[1]`, so the last candle can flicker until it closes.

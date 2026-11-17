@@ -1,5 +1,7 @@
 // Noise Area momentum for WIN / WDO (Zarattini, Aziz and Barbon, "Beat the Market").
-// Indicator version: bands, session VWAP and the position the rule would hold (candles painted).
+// Indicator: bands, session VWAP and the position the rule would hold (candles painted).
+// Strategy: with SendOrders(true) it also sends the orders, to be applied as an execution rule
+// and backtested (fixed number of contracts; the paper's volatility sizing is not here).
 // Ported from the Python reference in backend/core/src/b3core (noise_area.py, intraday_momentum.py).
 // Educational only, not investment advice. See docs/ntsl-noise-area.md.
 //
@@ -26,6 +28,9 @@ SessionStart(900);   // the market day starts at this time (HHMM); WIN trades 09
 ShowBands(true);
 ShowVwap(true);
 PaintPosition(true);
+SendOrders(false);   // true: send the orders (apply the script as an execution rule)
+Contracts(1);        // contracts per trade, fixed
+SessionEnd(1825);    // the last candle closes here (HHMM); the position is closed on it. B3 closes WIN at 17:55 in some seasons: set 1755 then
 
 Var
 NDays, NMin, CadMin, StopK, Rows, Cols : Integer;
@@ -34,7 +39,8 @@ FirstMin, ExitMin, StartMin, OpenMin, KeyI, DayRow, Idx, iCol, iDay, DayN, Dia :
 EveryB, NewDay, VwOk, AboveU, BelowL, AboveV, BelowV, IsDec, StopHit : Boolean;
 TypPx, CumPV, CumV, VW, DayOpen, PrevClose, HasPrev, MoveV, SumMv, Sigma, Wd, RefHi, RefLo, UB, LB, BandOk : Float;
 PosAfter, PosBefore, St, Held, pTmp, vObs : Float;
-CntMv : Integer;
+CntMv, EndMin, CloseMin : Integer;
+Tgt : Float;
 Hist : Array[1..156000] of Float;   // 260 rows (a ring of about a year of days) x 600 columns (minutes since the session start)
 
 begin
@@ -211,6 +217,33 @@ begin
     // candle that opens at or after the exit time
     Held := PosBefore;
     if OpenMin >= ExitMin then Held := 0;
+
+    // ---- the orders (only with SendOrders) ----------------------------------------------------------
+    // The position wanted for the next candle is what was decided at this close, flat from the exit
+    // time and at the end of the session. The orders compare it with the position actually held, so
+    // a candle processed twice sends nothing new. A reversal is one ReversePosition: a Buy sent
+    // while short is only a cover in NTSL.
+    if SendOrders then
+    begin
+        EndMin := TimeToMinutes(SessionEnd);
+        CloseMin := OpenMin + Floor(BarDuration + 0.5);
+        Tgt := PosAfter;
+        if (CloseMin >= ExitMin) or (CloseMin >= EndMin) then Tgt := 0;
+        if Tgt = 0 then
+        begin
+            if HasPosition then ClosePosition;
+        end
+        else if Tgt > 0 then
+        begin
+            if IsSold then ReversePosition
+            else if HasPosition = false then BuyAtMarket(Contracts);
+        end
+        else
+        begin
+            if IsBought then ReversePosition
+            else if HasPosition = false then SellShortAtMarket(Contracts);
+        end;
+    end;
 
     // ---- drawing ----------------------------------------------------------------------------------
     if PaintPosition then
