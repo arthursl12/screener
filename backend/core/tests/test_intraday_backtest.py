@@ -14,6 +14,7 @@ from b3core.intraday_momentum import (
     intraday_equity,
     performance,
     run_intraday_momentum,
+    trade_list,
 )
 
 NAN = float("nan")
@@ -380,3 +381,75 @@ def test_the_drawdown_summary_separates_balance_equity_and_adverse_drawdowns() -
     assert summary["adverse_drawdown"] == pytest.approx(250.0)  # 1150 to the 900 low
     assert summary["worst_day"] == pytest.approx(50.0)  # the end-of-day result
     assert summary["worst_intraday_loss"] == pytest.approx(200.0)  # 1100 at the open to 900
+
+
+# --- the bridge between the paper's shares and WIN contracts -------------------------------------
+
+
+def test_the_daily_result_reports_the_exposure_and_the_leverage_it_took() -> None:
+    bars = pd.concat([day_bars("2024-01-02", FLAT), day_bars("2024-01-03", rising_day())])
+
+    result = run_intraday_momentum(bars, SMALL)
+
+    day2 = result.loc["2024-01-03"]
+    assert day2["exposure"] == pytest.approx(10 * 100.0 * 1.0)  # 10 contracts of 100 points at R$ 1
+    assert day2["leverage"] == pytest.approx(1.0)  # R$ 1,000 of exposure on R$ 1,000 of equity
+    first = result.loc["2024-01-02"]
+    assert first["exposure"] == 0.0 and first["leverage"] == 0.0
+
+
+def random_days(count: int, seed: int) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    frames = []
+    for day in pd.bdate_range("2024-01-02", periods=count):
+        closes = 100.0 + np.cumsum(rng.normal(0, 0.3, 120))
+        frame = day_bars(day.strftime("%Y-%m-%d"), list(closes))
+        frame["volume"] = rng.integers(1, 40, 120).astype(float)
+        frames.append(frame)
+    return pd.concat(frames)
+
+
+def test_the_profit_of_a_day_is_the_leverage_times_the_index_move_on_the_equity() -> None:
+    """The same law for shares and for contracts: gain / equity = leverage x (points / open)."""
+    bars = random_days(40, 5)
+    settings = {**SMALL.__dict__, "lookback": 3, "min_days": 2, "capital": 100_000.0}
+    config = IntradayConfig(**settings)
+    result = run_intraday_momentum(bars, config)
+    trades = trade_list(bars, config, result)
+
+    points = trades.groupby("day")["points"].sum()
+    opens = bars["open"].groupby(bars.index.normalize()).first()
+    aum_before = result["aum"].shift(1).fillna(config.capital)
+    days = points.index
+    gain = result.loc[days, "gross"] / aum_before[days]
+    law = result.loc[days, "leverage"] * points / opens[days]
+
+    assert len(days) > 5
+    assert gain.to_numpy() == pytest.approx(law.to_numpy(), rel=1e-9, abs=1e-12)
+
+
+def test_the_leverage_taken_is_the_papers_target_up_to_the_rounding_of_whole_contracts() -> None:
+    bars = random_days(45, 11)
+    config = IntradayConfig(
+        **{
+            **SMALL.__dict__,
+            "lookback": 3,
+            "min_days": 2,
+            "capital": 100_000.0,
+            "target_vol": 0.004,
+            "max_leverage": 4.0,
+        }
+    )
+    result = run_intraday_momentum(bars, config)
+    daily = daily_volatility(bars["close"].groupby(bars.index.normalize()).last())
+    opens = bars["open"].groupby(bars.index.normalize()).first()
+    aum_before = result["aum"].shift(1).fillna(config.capital)
+
+    traded = result[result["ret"].notna()]
+    assert len(traded) > 20 and daily.notna().sum() > 10
+    for day in traded.index:
+        vol = daily[day]
+        asked = config.max_leverage if np.isnan(vol) else config.target_vol / vol
+        target = min(asked, config.max_leverage)
+        half_contract = 0.5 * opens[day] * config.point_value / aum_before[day]
+        assert abs(traded.loc[day, "leverage"] - target) <= half_contract + 1e-9

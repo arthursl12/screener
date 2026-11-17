@@ -315,8 +315,11 @@ def run_intraday_momentum(bars: pd.DataFrame, config: IntradayConfig) -> pd.Data
     """The daily backtest of the authors' notebook, one row per day.
 
     Columns: `contracts`, `trades` (sides, in and out), `gross`, `cost`, `net` (reais), `ret`
-    (net over the equity of the day before), `aum` and `margin` (what the contracts of the day
-    tie up at the broker). The first day, and days without any
+    (net over the equity of the day before), `aum`, `margin` (what the contracts of the day tie up
+    at the broker), `exposure` (the index value the contracts control at the open, in reais) and
+    `leverage` (that exposure over the equity of the day before). Exposure and leverage are what
+    the paper's shares are in its formula: the day's gain over the equity is the leverage times the
+    index move, for shares and contracts alike. The first day, and days without any
     sigma, do not trade: their `ret` is NaN and the equity carries over. Each day is sized on the
     equity at the end of the day before, at the open of the day.
     """
@@ -334,7 +337,7 @@ def run_intraday_momentum(bars: pd.DataFrame, config: IntradayConfig) -> pd.Data
     rows = []
     for number, current in enumerate(day.unique()):
         if number == 0 or not has_sigma[current]:
-            rows.append((0, 0.0, 0.0, 0.0, 0.0, math.nan, aum, 0.0))
+            rows.append((0, 0.0, 0.0, 0.0, 0.0, math.nan, aum, 0.0, 0.0, 0.0))
             continue
         where = positions[current]
         exposed = held[where]
@@ -344,14 +347,37 @@ def run_intraday_momentum(bars: pd.DataFrame, config: IntradayConfig) -> pd.Data
         gross = points * size * config.point_value
         cost = trades * size * config.fee_per_side
         net = gross - cost
+        notional = size * float(day_open[current]) * config.point_value
         previous, aum = aum, aum + net
         rows.append(
-            (size, trades, gross, cost, net, net / previous, aum, size * config.margin_per_contract)
+            (
+                size,
+                trades,
+                gross,
+                cost,
+                net,
+                net / previous,
+                aum,
+                size * config.margin_per_contract,
+                notional,
+                notional / previous,
+            )
         )
     return pd.DataFrame(
         rows,
         index=day.unique(),
-        columns=["contracts", "trades", "gross", "cost", "net", "ret", "aum", "margin"],
+        columns=[
+            "contracts",
+            "trades",
+            "gross",
+            "cost",
+            "net",
+            "ret",
+            "aum",
+            "margin",
+            "exposure",
+            "leverage",
+        ],
     )
 
 
