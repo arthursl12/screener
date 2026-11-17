@@ -231,7 +231,9 @@ begin
         if (CloseMin >= ExitMin) or (CloseMin >= EndMin) then Tgt := 0;
         if Tgt = 0 then
         begin
-            if HasPosition then ClosePosition;
+            // PosBefore is the model's own position: an entry filled at this candle's open is not yet
+            // seen by HasPosition in the backtest, so a stop on the first candle held waited one candle
+            if HasPosition or (PosBefore <> 0) then ClosePosition;
         end
         else if Tgt > 0 then
         begin

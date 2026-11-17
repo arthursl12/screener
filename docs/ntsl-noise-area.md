@@ -39,6 +39,19 @@ What the strategy part does not do: the paper's volatility-targeted size (the co
 
 Checked in Python: the position wanted for the next candle equals the position the model holds in the next candle on all 276,018 candles of WIN from 2023-01 (preset 2).
 
+## Compared with the ProfitPro backtest (17 November 2026)
+
+The owner ran preset 2 (`SendOrders(true)`, `Contracts(1)`, 1-minute chart, no commissions) over 26 October to 16 November and exported the operations (`samples/comparison/ops_profit.csv`, git-ignored: it holds account data). `notebooks/winfut_trade_book.ipynb`, section 3c, matches them to the Python model:
+
+- **13 ProfitPro operations, 13 model trades, 13 matched** on side and entry time, with **identical entry prices**: ProfitPro fills a market order at the **open of the candle after the signal**, which is the model's `entry_next_open`, not its decision-close fill (the two differ by 5 points or less per fill).
+- **11 of 13 identical to the point** on exit time and exit price (next-open fills).
+- **Two differences, both explained:**
+  1. 9 Nov, long 15:00: the model leaves at the 15:00 candle's close (the price is 83 points inside the band, a clear stop) and fills at the 15:01 open, 172,920 (-25 points); ProfitPro left at 15:02, 172,990 (+45 points). The stop fell on the first candle held. The backtest does not show the code a position entered at a candle's open until the next candle has run, so `if HasPosition then ClosePosition` waited one candle. **Changed** to `if HasPosition or (PosBefore <> 0)` (the model's own position); not yet re-run in ProfitPro. Re-run it: this trade should now leave at 15:01 for 172,920. If a `ClosePosition` on a flat position or a reprocessed candle misbehaves, that line is the one to look at.
+  2. 16 Nov, short 14:00: the file stops at 17:30, so the model closed it at 17:31 (170,845); ProfitPro closed it at 18:20 (170,910). Not a disagreement.
+- Total over the 13: **215 points (R$ 43.00) in ProfitPro, 210 points (R$ 42.00) in the model** with next-open fills; the 5 points are the first difference net of the second.
+
+So the model's rule, its sigma, bands, VWAP, checkpoints, stop and exit are the same as the NTSL strategy's on these three weeks. What remains different is how a fill is priced (next open against the model's decision-close convention), which is a convention, not a rule. The model's costs (R$ 1.25 a side) are not in ProfitPro's report.
+
 ## How it follows the language
 
 - **A candle can be processed many times** and every variable is global (manual, "Fluxo de Execução"). So every value is rebuilt from the previous candle's series value (`DayN[1]`, `CumPV[1]`, `PosAfter[1]`, `PrevClose[1]`, ...), never accumulated in place: a candle processed twice gives the same result.
