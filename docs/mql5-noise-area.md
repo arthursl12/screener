@@ -24,7 +24,7 @@ The inputs are the parameters themselves, so the Strategy Tester can optimize th
 | `StopKind` | `NA_STOP_BAND` (back inside the band) | `NA_STOP_VWAP_BAND` (inside the band or across the VWAP) |
 | `EveryBar` (act on the stop at every bar) | true | false (the checkpoints only) |
 
-Other inputs: `SessionStart` (HHMM, **server time**, default 900), `SessionEnd` (HHMM the day's **last bar closes**: WIN 1825, 1755 on the days B3 closes early; stocks 1800), `AutoSessionEnd` (read it from the symbol's schedule instead), `UseRealVolume` (the VWAP weighs real volume, as the Python model does; false for tick volume), and for the EA `Lots` (a fixed number of contracts), `MagicNumber`, `DeviationPts`, `SendOrders` (false: compute and log only), `WriteLog`.
+Other inputs: `SessionStart` (HHMM, **server time**, default 900), `SessionEnd` (HHMM the day's **last bar closes**: WIN 1825, 1755 on the days B3 closes early; stocks 1800), `AutoSessionEnd` (on by default: the day's end is the close of the previous day's last bar, so the 17:55 and 18:25 seasons are followed; `SessionEnd` is then only the start value), `UseRealVolume` (the VWAP weighs real volume, as the Python model does; false for tick volume), and for the EA `Lots` (a fixed number of contracts), `MagicNumber`, `DeviationPts`, `SendOrders` (false: compute and log only), `WriteLog`.
 
 The WIN optimized default is the best trial **by WIN** of the 50,000-trial search, chosen on development data. On the final test its WIN Sharpe went from 2.05 to 2.10, but it failed on WDO and does not beat the CDI on the 50/50 average (`docs/adr/0001-winfut-intraday-momentum-final-test.md`). It is not a signal service.
 
@@ -32,7 +32,7 @@ The WIN optimized default is the best trial **by WIN** of the 50,000-trial searc
 
 At the **close of each bar** the core works out the position wanted for the next bar: what was decided at this close, flat from `ExitTime`, and flat by the day's last bar. The EA sets that position with market orders on the first tick of the new bar, so a fill is at the **next bar's open**, as in ProfitPro and as in the `entry_next_open` columns of `notebooks/winfut_trade_book.ipynb`. A reversal is a close and an order the other way. Unlike ProfitPro's backtest, MT5 shows the EA its position at once, so a stop on the first bar held is acted on at the next open (the Python model's way), not one bar late.
 
-**No position is carried over a day boundary**, two ways. The flatten goes out one bar before the day's last bar (a market order sent at the last bar's close would fill the next morning), which needs `SessionEnd` to be the real close (332 of the 1,238 days in the WIN data close at 17:54, not 18:25). And whatever the last bar of a day wanted, the first bar of a new day starts flat.
+**No position is carried over a day boundary**, two ways. The flatten goes out one bar before the day's last bar (a market order sent at the last bar's close would fill the next morning), which needs the real close (332 of the 1,238 days in the WIN data close at 17:54, not 18:25: the US-DST months of 2022 and 2023). With `AutoSessionEnd` off and `SessionEnd` 1825, the EA held 52 trades overnight in the 2021-12 to 2026-11 test. With it on, the first day of a season that closes earlier (2022-03-14, 2023-03-13) is still not known in advance. And whatever the last bar of a day wanted, the first bar of a new day starts flat.
 
 Use a **minute chart** (1 minute is the exact one); the chart period must divide `Cadence`. Needs the lookback in days of history to be loaded. `WriteLog` writes `MQL5/Files/noise_area_log.csv` (one row per bar: time, close, sigma, bands, VWAP, the position decided, held and wanted) to compare with the Python engine bar by bar.
 
@@ -48,5 +48,5 @@ The `CNoiseCore` class (copied verbatim from the earlier `NoiseCore.mqh`, checke
 
 - That the file compiles in MetaEditor, and that the chart objects draw (segments, arrows).
 - That `CTrade` fills correctly on the B3 symbol (`SetTypeFillingBySymbol`) and that `PositionClose` then an order the other way behaves on the account's margin mode (netting or hedging).
-- `AutoSessionEnd`: whether the symbol's schedule (`SymbolInfoSessionTrade`) holds the early closes. If it just says 09:00 to 18:25, set `SessionEnd` by hand, or rely on the new-day flat.
+- `AutoSessionEnd` (the previous day's last bar): rerun 2021-12 to 2026-11 and check there is no position held over a night.
 - That the Strategy Tester's M1 history matches the exported CSV (it should: the data was exported from MT5).

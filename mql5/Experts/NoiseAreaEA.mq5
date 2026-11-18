@@ -273,8 +273,8 @@ input int          ExitTime      = 1820;             // HHMM: flat from this tim
 input ENUM_NA_STOP StopKind      = NA_STOP_BAND;     // stop
 input bool         EveryBar      = true;             // act on the stop at every bar, not only on the checkpoints
 input int          SessionStart  = 900;              // HHMM (server time): the market day starts here
-input int          SessionEnd    = 1825;             // HHMM: the day's LAST bar closes here (WIN 1825, 1755 in some seasons; stocks 1800)
-input bool         AutoSessionEnd = false;           // read the day's session end from the symbol's schedule (else SessionEnd)
+input int          SessionEnd    = 1825;             // HHMM: the day's LAST bar closes here (the start value with AutoSessionEnd; WIN 1825 or 1755, stocks 1800)
+input bool         AutoSessionEnd = true;            // the day's end is the previous day's last bar close (else SessionEnd always)
 input bool         UseRealVolume = true;             // VWAP weights: real volume (false: tick volume)
 input double       Lots          = 1.0;              // contracts per trade, fixed
 input long         MagicNumber   = 20261117;         // magic number of the orders
@@ -383,6 +383,27 @@ void LogBar(const datetime t, const double c)
   }
 
 //+------------------------------------------------------------------+
+//| One closed bar into the core. With AutoSessionEnd, the day's end  |
+//| is the previous day's: the close of its last bar (B3 moved its    |
+//| close between 17:55 and 18:25 with the seasons), seen when the    |
+//| first bar of a new day arrives. An end before the first decision  |
+//| is a cut file, not a close, and is ignored.                       |
+//+------------------------------------------------------------------+
+void ProcessBar(const MqlRates &b)
+  {
+   if(AutoSessionEnd && g_lastProcessed > 0 && (long)(b.time / 86400) != (long)(g_lastProcessed / 86400))
+     {
+      MqlDateTime d;
+      TimeToStruct(g_lastProcessed + PeriodSeconds(_Period), d);
+      const int e = d.hour * 100 + d.min;
+      if(e >= FirstDecision && e != core.SessionEnd)
+         core.SetSessionEnd(e);
+     }
+   core.Process(b.time, b.open, b.high, b.low, b.close, b.tick_volume, b.real_volume);
+   g_lastProcessed = b.time;
+  }
+
+//+------------------------------------------------------------------+
 //| The bars [from, to] by open time, oldest first, fed to the core.  |
 //+------------------------------------------------------------------+
 int Feed(const datetime from, const datetime to, const bool log)
@@ -394,34 +415,12 @@ int Feed(const datetime from, const datetime to, const bool log)
      {
       if(r[i].time <= g_lastProcessed)
          continue;
-      core.Process(r[i].time, r[i].open, r[i].high, r[i].low, r[i].close, r[i].tick_volume, r[i].real_volume);
-      g_lastProcessed = r[i].time;
+      ProcessBar(r[i]);
       DrawBar(r[i].time, r[i].open);
       if(log)
          LogBar(r[i].time, r[i].close);
      }
    return n;
-  }
-
-//+------------------------------------------------------------------+
-//| The time (HHMM) the symbol's last trading session of a weekday    |
-//| ends, from the symbol's schedule; -1 if it has none.              |
-//+------------------------------------------------------------------+
-int SessionEndHhmm(const ENUM_DAY_OF_WEEK dow)
-  {
-   datetime from, to;
-   int best = -1;
-   for(uint i = 0; i < 10; i++)
-     {
-      if(!SymbolInfoSessionTrade(_Symbol, dow, i, from, to))
-         break;
-      const int minutes = (int)(to / 60);
-      if(minutes > best)
-         best = minutes;
-     }
-   if(best <= 0)
-      return -1;
-   return (best / 60) * 100 + best % 60;
   }
 
 //+------------------------------------------------------------------+
@@ -498,8 +497,7 @@ int OnInit()
       g_drawFrom = r[got - 1].time - (datetime)DrawDays * 86400;
    for(int i = 0; i < got; i++)
      {
-      core.Process(r[i].time, r[i].open, r[i].high, r[i].low, r[i].close, r[i].tick_volume, r[i].real_volume);
-      g_lastProcessed = r[i].time;
+      ProcessBar(r[i]);
       DrawBar(r[i].time, r[i].open);
      }
    g_lastBarSeen = iTime(_Symbol, _Period, 0);
@@ -529,17 +527,6 @@ void OnTick()
    const datetime to = cur - 1;
    if(from > to)
       return;
-   if(AutoSessionEnd)
-     {
-      MqlDateTime d;
-      TimeToStruct(cur, d);
-      const int e = SessionEndHhmm((ENUM_DAY_OF_WEEK)d.day_of_week);
-      if(e > 0 && e != core.SessionEnd)
-        {
-         PrintFormat("NoiseArea: session end of the day is %04d (from the symbol's schedule)", e);
-         core.SetSessionEnd(e);
-        }
-     }
    if(Feed(from, to, true) <= 0)
       return;
    if((long)(cur / 86400) != (long)(g_lastProcessed / 86400))
