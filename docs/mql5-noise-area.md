@@ -59,3 +59,36 @@ Checked: the volatility, computed with the EA's indexing over the 770 developmen
 
 For the paper's rule, use `Sizing = NA_SIZE_VOLTGT` with the paper's inputs (see the header of the file).
 
+## Validation in MT5 (Nov 17, 2026)
+
+The Strategy Tester (tick by tick, WIN$N, M1 unless said, 2021-12-01 to 2026-11-16, with the tester's random delay on the later runs) against the Python model, trade by trade (matched on side and entry minute). The reports are in the git-ignored `samples/comparison/`.
+
+| Run | Trades | Matched to the model | Held overnight |
+| --- | --- | --- | --- |
+| WIN optimized, 1 lot, 2025-01 to 2026-11 | 212 | 212 of 212, all exits in the same minute | 0 |
+| WIN optimized, 1 lot, 2021-12 to 2026-11 (first EA) | 582 | 580 | 52 |
+| same, after `AutoSessionEnd` (previous day's close) | 581 | 579 | 2 |
+| same on M5 (the model run on 5-minute bars through the C++-checked core) | 549 | 547 | 2 |
+| paper's rule, volatility sizing, no margin limit | 1,486 | 1,473 | 5 |
+| WIN optimized, volatility sizing, no margin limit, R$ 100,000 | 581 | 579 | 1 |
+| same, R$ 10,000 | 570 | 570 of the 581 above | 1 |
+
+What was found:
+- **Signals and exits agree.** Every difference is explained: the warm-up (MT5 has history before 2021-12-01, the model does not: 2 to 13 trades in December 2021), the flatten one bar before the day's last bar (by design), and the season-switch days below.
+- **Overnight positions were a real flaw, found by the 2021 run.** B3 closed at 17:55 in the US-DST months of 2022 and 2023, and at 18:25 otherwise (a few days run a minute longer). With a fixed `SessionEnd` 1825 the EA held 52 trades overnight. It now takes the day's end as the earlier of the last two days' closes. What remains is the first day of a season that closes earlier (2022-03-14, 2023-03-13), which cannot be known in advance, and the mirror day (2022-11-07) when one trade is missed.
+- **Fill timing is the difference in P&L.** MT5 fills at the first tick of the next bar, with the tester's random delay, a few seconds after the open. On the same trades it earns 7.1% fewer points than the model at next-open prices with the WIN optimized rule (6.9 points a trade) and 27.3 against 37.3 points per contract round trip with the paper's rule (every 30-minute checkpoint, more at the open and close). The model's one tick a side of slippage (10 points a round trip) brings the model within 0.2% of MT5 for the paper's rule (R$ 69,760 against R$ 69,876) and within 5% for the WIN optimized (MT5 higher). It is a good average and not a constant.
+- **Sizing.** The paper's volatility target (`Sizing = NA_SIZE_VOLTGT`) reproduces the model's formula: given MT5's own balance, 899 of 905 days of the paper run have exactly the expected contracts (the other 6 are December 2021, where MT5 had volatility history and the model used the cap).
+
+Results of the sized runs (gross of costs, which are about R$ 15,100 on the R$ 100,000 run at R$ 0.25 and a tick a side):
+
+| | Paper's rule, R$ 100k | WIN optimized, R$ 100k | WIN optimized, R$ 10k |
+| --- | --- | --- | --- |
+| Net profit | R$ 70,256 | R$ 142,055 | R$ 14,255 |
+| Max drawdown (balance, equity) | 21.1%, 22.1% | 6.5%, 9.3% | 7.2%, 9.4% |
+| Profit factor | 1.13 | 2.01 | 1.89 |
+| Contracts, mean (max) | 8.7 (19) | 10.4 (24) | 1.2 (2) |
+| CAGR, gross; after costs | 11.3%; about 6.7% | 19.5%; 18.0% | the same as the R$ 100k in percent |
+
+- The WIN optimized rule is less aggressive than the paper's because it is in the market less (118 minutes a trade, a trade on 31% of days, from 12:00), not because the size is smaller. Its 2024 to 2026 profits make R$ 120k of the R$ 142k.
+- **Not new evidence.** The WIN optimized trial was chosen on 2021-12 to 2024 (so that part is in sample) and its 2025-26 result was already read in the final test. This run confirms that the EA reproduces the model and prices fills, not that the edge is real. The same trial had a Sharpe of 0.38 on WDO. No pass rule is approved and nothing is nominated.
+- **Account size.** At R$ 10,000 a day is 1 or 2 contracts (a contract is worth R$ 21,000 to R$ 40,000), and 11 of the 581 days round to 0 contracts (days of high volatility, median 4% a day). The return in percent is the same as at R$ 100,000 (+142.6% against +142.1%): the effective leverage is 2.06 on average against a target of 1.94, 10% of days at more than 1.5 times the target. So the rounding is noise day by day, not a bias, but the leverage target decides the result: with the sizing the strategy trades at about 1.9 times its capital, and its return scales with that.

@@ -61,6 +61,7 @@ Exploratory work that is not kept in the repo reached the same conclusion: chang
 - **`notebooks/`**: all analysis, with no trading logic in them.
 - **`docs/`**: the specification of every trading rule (`docs/brief.md`), the benchmark specs, data notes, and a learning log.
 - **`ntsl/noise_area_win.ntsl`**: the same rule as a ProfitPro (Nelogica NTSL) indicator and, with `SendOrders(true)`, a strategy to backtest there. Its logic was checked against the Python engine bar by bar (0 differing bars out of 276,517 one-minute bars on WIN from 2023-01), and the strategy against ProfitPro's own backtest (`docs/ntsl-noise-area.md`).
+- **`mql5/Experts/NoiseAreaEA.mq5`**: the same rule as one MetaTrader 5 Expert Advisor (trades, backtests in the Strategy Tester, and draws the bands, VWAP and position arrows), with the paper's volatility-target sizing as an option. Run tick by tick on WIN from 2021-12, its trades match the model's (579 of 581 on the WIN optimized rule, all exits in the same minute); the difference in profit is fill timing, about one tick a side. Validating it found a real flaw (positions held overnight on the days B3 closed at 17:55), now fixed. Details, results by sizing and account size in `docs/mql5-noise-area.md`. Not new evidence about the edge: the runs use the data already read in the final test.
 - **`tools/check_notebook_outputs.py`**: a guard that refuses a published notebook that prints raw candles.
 
 Not built: 123 de venda, a genetic-algorithm optimizer, the API, the database and the frontend (the brief's later phases).
