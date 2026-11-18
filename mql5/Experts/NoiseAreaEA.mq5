@@ -276,7 +276,16 @@ input int          SessionStart  = 900;              // HHMM (server time): the 
 input int          SessionEnd    = 1825;             // HHMM: the day's LAST bar closes here (the start value with AutoSessionEnd; WIN 1825 or 1755, stocks 1800)
 input bool         AutoSessionEnd = true;            // the day's end is the previous day's last bar close (else SessionEnd always)
 input bool         UseRealVolume = true;             // VWAP weights: real volume (false: tick volume)
-input double       Lots          = 1.0;              // contracts per trade, fixed
+enum ENUM_NA_SIZING
+  {
+   NA_SIZE_FIXED  = 0,   // fixed: Lots contracts every day
+   NA_SIZE_VOLTGT = 1    // the paper's: the leverage that targets the daily volatility
+  };
+input ENUM_NA_SIZING Sizing      = NA_SIZE_FIXED;    // position size
+input double       Lots          = 1.0;              // Sizing fixed: contracts per trade
+input double       TargetVol     = 0.02;             // Sizing volatility: the daily volatility to target (paper 2%)
+input double       MaxLeverage   = 4.0;              // Sizing volatility: leverage cap (paper 4)
+input double       MarginPerContract = 1000.0;       // Sizing volatility: contracts never exceed balance / this (0 = no limit)
 input long         MagicNumber   = 20261117;         // magic number of the orders
 input int          DeviationPts  = 50;               // allowed slippage, in points
 input bool         SendOrders    = true;             // false: only compute (and log)
@@ -287,6 +296,9 @@ input int          DrawDays      = 5;                // keep the drawing of the 
 CTrade     trade;
 CNoiseCore core;
 datetime   g_lastProcessed = 0;
+double     g_lastClose     = 0.0;
+double     g_closes[];        // the last close of each past day, oldest first
+double     g_size          = 0.0; // contracts of the day
 datetime   g_lastBarSeen   = 0;
 int        g_log           = INVALID_HANDLE;
 bool       g_draw          = false;
@@ -383,6 +395,49 @@ void LogBar(const datetime t, const double c)
   }
 
 //+------------------------------------------------------------------+
+//| The day's contracts. Sizing volatility is the model's (and the    |
+//| authors' notebook's): balance / (day open x point value) x the    |
+//| leverage target / volatility, capped at MaxLeverage, where the    |
+//| volatility is the sample standard deviation of the 14 daily       |
+//| close-to-close returns of days d-15 .. d-2 (the day before is     |
+//| left out, as in the notebook). Without 14 returns it uses the cap.|
+//+------------------------------------------------------------------+
+double ComputeSize(const double dayOpen)
+  {
+   if(Sizing == NA_SIZE_FIXED)
+      return Lots;
+   const double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   const double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tickSize <= 0.0 || tickValue <= 0.0 || dayOpen <= 0.0)
+      return 0.0;
+   const double pointValue = tickValue / tickSize;
+   const double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double leverage = MaxLeverage;
+   const int n = ArraySize(g_closes);          // g_closes[n-1] is the day before: left out
+   if(n >= 16)
+     {
+      double sum = 0.0, sum2 = 0.0;
+      for(int k = n - 15; k <= n - 2; k++)
+        {
+         const double r = g_closes[k] / g_closes[k - 1] - 1.0;
+         sum += r;
+         sum2 += r * r;
+        }
+      const double mean = sum / 14.0;
+      const double var = (sum2 - 14.0 * mean * mean) / 13.0;
+      if(var > 0.0)
+         leverage = MathMin(TargetVol / MathSqrt(var), MaxLeverage);
+     }
+   double wanted = MathRound(balance / (dayOpen * pointValue) * leverage);
+   if(MarginPerContract > 0.0)
+      wanted = MathMin(wanted, MathFloor(balance / MarginPerContract));
+   const double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(step > 0.0)
+      wanted = MathFloor(wanted / step + 1e-9) * step;
+   return wanted;
+  }
+
+//+------------------------------------------------------------------+
 //| One closed bar into the core. With AutoSessionEnd, the day's end  |
 //| is the previous day's: the close of its last bar (B3 moved its    |
 //| close between 17:55 and 18:25 with the seasons), seen when the    |
@@ -391,6 +446,24 @@ void LogBar(const datetime t, const double c)
 //+------------------------------------------------------------------+
 void ProcessBar(const MqlRates &b)
   {
+   if(g_lastProcessed == 0 || (long)(b.time / 86400) != (long)(g_lastProcessed / 86400))
+     {
+      if(g_lastProcessed > 0)
+        {
+         const int n = ArraySize(g_closes);
+         if(n >= 40)
+           {
+            for(int k = 1; k < n; k++)
+               g_closes[k - 1] = g_closes[k];
+            ArrayResize(g_closes, n - 1);
+           }
+         ArrayResize(g_closes, ArraySize(g_closes) + 1);
+         g_closes[ArraySize(g_closes) - 1] = g_lastClose;
+        }
+      g_size = ComputeSize(b.open);
+      if(Sizing == NA_SIZE_VOLTGT && b.time >= g_drawFrom)
+         PrintFormat("NoiseArea: %s %.0f contracts", TimeToString(b.time, TIME_DATE), g_size);
+     }
    if(AutoSessionEnd && g_lastProcessed > 0 && (long)(b.time / 86400) != (long)(g_lastProcessed / 86400))
      {
       MqlDateTime d;
@@ -401,6 +474,7 @@ void ProcessBar(const MqlRates &b)
      }
    core.Process(b.time, b.open, b.high, b.low, b.close, b.tick_volume, b.real_volume);
    g_lastProcessed = b.time;
+   g_lastClose = b.close;
   }
 
 //+------------------------------------------------------------------+
@@ -435,6 +509,8 @@ void Act(const double wanted)
       have = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
    if(want == have)
       return;
+   if(want != 0 && g_size <= 0.0)
+      return;   // a day sized at no contracts
    if(have != 0)
      {
       if(!trade.PositionClose(_Symbol))
@@ -442,13 +518,13 @@ void Act(const double wanted)
      }
    if(want == 1)
      {
-      if(!trade.Buy(Lots, _Symbol, 0.0, 0.0, 0.0, "NoiseArea"))
+      if(!trade.Buy(g_size, _Symbol, 0.0, 0.0, 0.0, "NoiseArea"))
          PrintFormat("NoiseArea: buy failed, %d %s", trade.ResultRetcode(), trade.ResultRetcodeDescription());
      }
    else
       if(want == -1)
         {
-         if(!trade.Sell(Lots, _Symbol, 0.0, 0.0, 0.0, "NoiseArea"))
+         if(!trade.Sell(g_size, _Symbol, 0.0, 0.0, 0.0, "NoiseArea"))
             PrintFormat("NoiseArea: sell failed, %d %s", trade.ResultRetcode(), trade.ResultRetcodeDescription());
         }
   }

@@ -24,7 +24,7 @@ The inputs are the parameters themselves, so the Strategy Tester can optimize th
 | `StopKind` | `NA_STOP_BAND` (back inside the band) | `NA_STOP_VWAP_BAND` (inside the band or across the VWAP) |
 | `EveryBar` (act on the stop at every bar) | true | false (the checkpoints only) |
 
-Other inputs: `SessionStart` (HHMM, **server time**, default 900), `SessionEnd` (HHMM the day's **last bar closes**: WIN 1825, 1755 on the days B3 closes early; stocks 1800), `AutoSessionEnd` (on by default: the day's end is the close of the previous day's last bar, so the 17:55 and 18:25 seasons are followed; `SessionEnd` is then only the start value), `UseRealVolume` (the VWAP weighs real volume, as the Python model does; false for tick volume), and for the EA `Lots` (a fixed number of contracts), `MagicNumber`, `DeviationPts`, `SendOrders` (false: compute and log only), `WriteLog`.
+Other inputs: `SessionStart` (HHMM, **server time**, default 900), `SessionEnd` (HHMM the day's **last bar closes**: WIN 1825, 1755 on the days B3 closes early; stocks 1800), `AutoSessionEnd` (on by default: the day's end is the close of the previous day's last bar, so the 17:55 and 18:25 seasons are followed; `SessionEnd` is then only the start value), `UseRealVolume` (the VWAP weighs real volume, as the Python model does; false for tick volume), and for the EA `Sizing` (`NA_SIZE_FIXED`: `Lots` contracts every day; `NA_SIZE_VOLTGT`: the paper's volatility target, below), `Lots`, `MagicNumber`, `DeviationPts`, `SendOrders` (false: compute and log only), `WriteLog`.
 
 The WIN optimized default is the best trial **by WIN** of the 50,000-trial search, chosen on development data. On the final test its WIN Sharpe went from 2.05 to 2.10, but it failed on WDO and does not beat the CDI on the 50/50 average (`docs/adr/0001-winfut-intraday-momentum-final-test.md`). It is not a signal service.
 
@@ -50,3 +50,12 @@ The `CNoiseCore` class (copied verbatim from the earlier `NoiseCore.mqh`, checke
 - That `CTrade` fills correctly on the B3 symbol (`SetTypeFillingBySymbol`) and that `PositionClose` then an order the other way behaves on the account's margin mode (netting or hedging).
 - `AutoSessionEnd` (the previous day's last bar): rerun 2021-12 to 2026-11 and check there is no position held over a night.
 - That the Strategy Tester's M1 history matches the exported CSV (it should: the data was exported from MT5).
+
+## Position size
+
+`Sizing = NA_SIZE_VOLTGT` is the paper's sizing, as in the Python model (`contracts_for`): each day, contracts = balance / (day open x point value) x min(`TargetVol` / volatility, `MaxLeverage`), rounded, and never more than balance / `MarginPerContract`. The volatility is the sample standard deviation of the 14 daily close-to-close returns of days d-15 to d-2 (the day before is left out, as in the authors' notebook); with fewer than 14 returns the cap is used. Defaults: 2%, 4, R$ 1,000. The balance is the account's balance at the start of the day (it compounds, as the model's does; a R$ 100,000 deposit in the tester matches the model's start). The point value is read from the symbol (WIN: R$ 0.20). The day's contracts are written to the Experts log.
+
+Checked: the volatility, computed with the EA's indexing over the 770 development days, equals `daily_volatility` on all of them. Not checked in MT5: the sizing end to end (the contracts of each day against the model's `contracts` column).
+
+For the paper's rule, use `Sizing = NA_SIZE_VOLTGT` with the paper's inputs (see the header of the file).
+
