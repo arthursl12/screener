@@ -297,6 +297,7 @@ CTrade     trade;
 CNoiseCore core;
 datetime   g_lastProcessed = 0;
 double     g_lastClose     = 0.0;
+int        g_closeBefore   = 0;       // HHMM: the close of yesterday (the last day seen)
 double     g_closes[];        // the last close of each past day, oldest first
 double     g_size          = 0.0; // contracts of the day
 datetime   g_lastBarSeen   = 0;
@@ -468,9 +469,18 @@ void ProcessBar(const MqlRates &b)
      {
       MqlDateTime d;
       TimeToStruct(g_lastProcessed + PeriodSeconds(_Period), d);
-      const int e = d.hour * 100 + d.min;
-      if(e >= FirstDecision && e != core.SessionEnd)
-         core.SetSessionEnd(e);
+      const int closeHhmm = d.hour * 100 + d.min;
+      if(closeHhmm >= FirstDecision)
+        {
+         //--- the earlier of the last two days' closes: a day that runs a minute longer than the next
+         //    (it happens) must not leave the next day's flatten a minute too late
+         int e = closeHhmm;
+         if(g_closeBefore > 0 && g_closeBefore < e)
+            e = g_closeBefore;
+         g_closeBefore = closeHhmm;
+         if(e != core.SessionEnd)
+            core.SetSessionEnd(e);
+        }
      }
    core.Process(b.time, b.open, b.high, b.low, b.close, b.tick_volume, b.real_volume);
    g_lastProcessed = b.time;
