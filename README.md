@@ -100,6 +100,7 @@ The futures notebooks (`winfut_*`) read MT5 1-minute exports of `WIN$N` and `WDO
 | `winfut_intraday_momentum.ipynb` | The strategy on development data: bands, stops, the sizing bridge, drawdowns, variants | stripped |
 | `winfut_beat_the_market.ipynb` | The paper's tables, figures and FAQ recreated on WIN | stripped |
 | `winfut_trade_book.ipynb` | The last N trades of one configuration, and the comparison with a ProfitPro operations report | stripped |
+| `winfut_contracts_and_cdi.ipynb` | How many contracts on a small account: the paper's sizing by account size, one contract per R$ X, risk of ruin with a 60% stop-out, when to add a contract, and head to head with the CDI with a monthly deposit | stripped |
 
 ## Limitations
 
